@@ -1,8 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Mic, Square, Download, Share2, Copy, CheckCircle,
-  MessageSquare, LogOut, Inbox, Smartphone, Home
+  MessageSquare, LogOut, Inbox, Smartphone
 } from 'lucide-react';
+
+// ... [Keep mockAuth, mockDB, formatTime, wrapTextByWords, getSupportedMimeType exactly as they are] ...
+// (Pasting the full corrected component below for easy copy-paste)
 
 // ------------------ Mock Auth & DB ------------------
 const mockAuth = {
@@ -67,7 +70,6 @@ function wrapTextByWords(text, maxCharsPerLine = 16) {
   return lines;
 }
 
-// Helper to detect MP4 support
 const getSupportedMimeType = () => {
   const types = [
     'video/mp4',
@@ -79,7 +81,7 @@ const getSupportedMimeType = () => {
   for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
-  return 'video/webm'; // Fallback
+  return 'video/webm';
 };
 
 // ------------------------------ Main App ------------------------------------
@@ -92,10 +94,7 @@ export default function App() {
   const [audioBlob, setAudioBlob] = useState(null);
   const [transcript, setTranscript] = useState('');
   const [processing, setProcessing] = useState(false);
-  
-  // Store blob URL AND mimeType
   const [previewVideo, setPreviewVideo] = useState({ url: '', mimeType: '' });
-  
   const [messages, setMessages] = useState([]);
   const [linkCopied, setLinkCopied] = useState(false);
   const [targetUsername, setTargetUsername] = useState('');
@@ -111,9 +110,12 @@ export default function App() {
   const recognitionRef = useRef(null);
   const audioUrlRef = useRef(null);
   const videoUrlRef = useRef(null);
+  
+  // Clean references for audio logic
   const audioElementRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const ttsObjectUrlRef = useRef(null);
 
-  // Initialize Auth
   useEffect(() => {
     mockAuth.init();
     if (mockAuth.currentUser) {
@@ -123,13 +125,14 @@ export default function App() {
     }
     return () => {
       clearInterval(timerRef.current);
-      if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch (e) {} }
+      if (recognitionRef.current) try { recognitionRef.current.stop(); } catch (e) {}
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+      if (ttsObjectUrlRef.current) URL.revokeObjectURL(ttsObjectUrlRef.current);
+      if (audioContextRef.current) audioContextRef.current.close();
     };
   }, []);
 
-  // Route Handling
   useEffect(() => {
     const path = window.location.pathname;
     if (path.startsWith('/u/')) {
@@ -143,6 +146,7 @@ export default function App() {
 
   // ----------------- Recording Logic -----------------
   const startRecording = async () => {
+    // Cleanup previous
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
     if (previewVideo.url) { URL.revokeObjectURL(previewVideo.url); setPreviewVideo({ url: '', mimeType: '' }); }
 
@@ -151,7 +155,6 @@ export default function App() {
       audioChunksRef.current = [];
       setTranscript('');
 
-      // We only need audio recording for the "input"
       const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
       const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
@@ -164,7 +167,6 @@ export default function App() {
       };
       recorder.start();
 
-      // Speech Recognition
       try {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SR) {
@@ -202,7 +204,7 @@ export default function App() {
     clearInterval(timerRef.current);
   };
 
-  // ----------------- Generate MP4/Video -----------------
+  // ----------------- Generate MP4/Video (FIXED AUDIO) -----------------
   const generatePreview = async () => {
     if (!transcript && !audioBlob) {
       alert('No audio recorded.');
@@ -212,69 +214,85 @@ export default function App() {
     setPreviewVideo({ url: '', mimeType: '' });
     
     const canvas = canvasRef.current;
-    // Set typical mobile vertical resolution
     canvas.width = 1080;
     canvas.height = 1920;
     const ctx = canvas.getContext('2d');
 
-    // 1. Fetch Robotic TTS Audio (StreamElements API)
+    // 1. Fetch Robotic TTS Audio SECURELY
     const textToSpeak = transcript || "Audio message received.";
     const ttsUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
     
-    // Setup Audio Element
-    if (audioElementRef.current) {
-      audioElementRef.current.pause();
-      audioElementRef.current.removeAttribute('src');
-    } else {
-      audioElementRef.current = document.createElement('audio');
-    }
+    // Cleanup previous context/audio
+    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null; }
+    if (ttsObjectUrlRef.current) { URL.revokeObjectURL(ttsObjectUrlRef.current); }
     
-    audioElementRef.current.crossOrigin = 'anonymous';
-    audioElementRef.current.src = ttsUrl;
+    // Create new Audio Context and Source
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+    audioContextRef.current = audioCtx;
+    const dest = audioCtx.createMediaStreamDestination();
+    
+    // Create a fresh audio element for this run
+    const audioEl = new Audio();
+    audioEl.crossOrigin = "anonymous";
+    audioElementRef.current = audioEl;
 
-    let audioStream = null;
     try {
-      await new Promise((resolve) => {
-        audioElementRef.current.onloadeddata = resolve;
-        audioElementRef.current.onerror = () => { console.warn('TTS fetch error'); resolve(); }; 
-      });
-      await audioElementRef.current.play();
-      
-      // Capture audio stream
-      if (audioElementRef.current.captureStream) audioStream = audioElementRef.current.captureStream();
-      else if (audioElementRef.current.mozCaptureStream) audioStream = audioElementRef.current.mozCaptureStream();
-    } catch (e) { console.warn('Audio capture error', e); }
+      // Fetch Blob explicitly to avoid Tainted Canvas/Stream issues
+      const resp = await fetch(ttsUrl);
+      const blob = await resp.blob();
+      const objUrl = URL.createObjectURL(blob);
+      ttsObjectUrlRef.current = objUrl;
+      audioEl.src = objUrl;
 
-    // 2. Determine MIME Type (Prefer MP4)
-    const mimeType = getSupportedMimeType();
-    
-    // 3. Record Canvas + Audio
+      // Wait for load
+      await new Promise((resolve, reject) => {
+        audioEl.onloadeddata = resolve;
+        audioEl.onerror = reject;
+      });
+
+      // Hook up Web Audio API
+      const source = audioCtx.createMediaElementSource(audioEl);
+      source.connect(dest); // To Recorder
+      source.connect(audioCtx.destination); // To Speakers (optional, helps timing)
+      
+      await audioEl.play();
+    } catch (e) {
+      console.error("Audio generation failed:", e);
+      alert("Could not generate audio. Check internet.");
+      setProcessing(false);
+      return;
+    }
+
+    // 2. Combine Tracks (Canvas Video + Web Audio)
     const canvasStream = canvas.captureStream(30);
     const combined = new MediaStream([
-      ...canvasStream.getVideoTracks(), 
-      ...(audioStream ? audioStream.getAudioTracks() : [])
+      ...canvasStream.getVideoTracks(),
+      ...dest.stream.getAudioTracks() // THIS IS THE KEY FIX
     ]);
 
-    const videoOptions = { mimeType };
+    // 3. Recorder Setup
+    const mimeType = getSupportedMimeType();
     let recorder;
     try {
-      recorder = new MediaRecorder(combined, videoOptions);
+      recorder = new MediaRecorder(combined, { mimeType });
     } catch(e) {
-      // Fallback if options failed
       recorder = new MediaRecorder(combined);
     }
 
     const videoChunks = [];
     recorder.ondataavailable = e => { if (e.data.size) videoChunks.push(e.data); };
     recorder.onstop = () => {
-      // Use the actual mime type used by the recorder
       const blob = new Blob(videoChunks, { type: recorder.mimeType || mimeType });
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
       const url = URL.createObjectURL(blob);
       videoUrlRef.current = url;
       setPreviewVideo({ url, mimeType: recorder.mimeType || mimeType });
       setProcessing(false);
-      audioElementRef.current.pause();
+      
+      // Cleanup
+      audioEl.pause();
+      audioCtx.close(); 
     };
 
     recorder.start();
@@ -282,15 +300,15 @@ export default function App() {
     // 4. Animation Loop
     const words = textToSpeak.split(/\s+/);
     const startTime = Date.now();
-    const duration = (audioElementRef.current.duration && isFinite(audioElementRef.current.duration)) 
-      ? audioElementRef.current.duration + 0.5 
+    const duration = (audioEl.duration && isFinite(audioEl.duration)) 
+      ? audioEl.duration + 0.5 
       : (words.length * 0.5) + 2;
 
     const drawFrame = () => {
       const elapsed = (Date.now() - startTime) / 1000;
       const index = Math.min(Math.floor(elapsed * 2.5), words.length);
 
-      // Cyberpunk BG
+      // Dark Tech BG
       const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
       grad.addColorStop(0, '#000000');
       grad.addColorStop(1, '#0f2027');
@@ -340,31 +358,24 @@ export default function App() {
     if (!videoUrl) return;
     
     try {
-      // 1. Get Blob
       const blob = await fetch(videoUrl).then(r => r.blob());
-      
-      // 2. Determine Extension (mp4 or webm)
       const ext = (type && type.includes('mp4')) ? 'mp4' : 'webm';
       const filename = `voiceanon_${Date.now()}.${ext}`;
-      
-      // 3. Create File Object
       const file = new File([blob], filename, { type: type || blob.type });
 
-      // 4. Share Intent (Files Only)
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
-          files: [file],
-          // Leaving title/text empty often forces "File Share" mode on iOS/Android
+          files: [file]
         });
       } else {
         throw new Error('Native sharing not supported');
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
-        alert('Sharing failed or not supported. Downloading file instead.');
+        alert('Sharing failed. Downloading file instead.');
         const a = document.createElement('a');
         a.href = videoUrl;
-        a.download = `voiceanon_${Date.now()}.mp4`; // Try force mp4 name on download fallback
+        a.download = `voiceanon_${Date.now()}.mp4`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -381,8 +392,6 @@ export default function App() {
   };
 
   // ------------------- VIEWS -------------------
-  
-  // LANDING
   if (view === 'landing') {
     return (
       <div className="min-h-screen bg-black text-green-500 font-mono">
@@ -406,7 +415,6 @@ export default function App() {
     );
   }
 
-  // AUTH
   if (view === 'signin' || view === 'signup') {
     const isIn = view === 'signin';
     const handleSubmit = (e) => {
@@ -431,7 +439,6 @@ export default function App() {
     );
   }
 
-  // DASHBOARD
   if (view === 'dashboard') {
     return (
       <div className="min-h-screen bg-gray-900 text-white font-mono">
@@ -455,7 +462,6 @@ export default function App() {
     );
   }
 
-  // RECORD
   if (view === 'record') {
     const sendMessage = () => {
       if (!previewVideo.url) return;
@@ -513,7 +519,6 @@ export default function App() {
     );
   }
 
-  // INBOX / SUCCESS
   if (view === 'inbox' || view === 'success') {
     return (
       <div className="min-h-screen bg-gray-900 p-4 font-mono">
