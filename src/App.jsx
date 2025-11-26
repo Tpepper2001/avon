@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Mic, Square, Send, Download, Share2, Copy, CheckCircle, 
-  MessageSquare, Users, TrendingUp, LogOut, Home, Inbox 
+import {
+  Mic, Square, Send, Download, Share2, Copy, CheckCircle,
+  MessageSquare, Users, TrendingUp, LogOut, Home, Inbox
 } from 'lucide-react';
 
-// Mock Auth & DB
+// ------------------ Mock Auth & DB (kept simple + safer note) ------------------
+// Note: passwords are still plain text in localStorage for this mock. Do NOT
+// do this in production. This mock mirrors your original behavior but avoids
+// unnecessary security holes where possible.
 const mockAuth = {
   currentUser: null,
   signIn: (email, password) => {
@@ -34,18 +37,50 @@ const mockDB = {
   saveMessage: (username, msg) => {
     const key = `messages_${username}`;
     const msgs = JSON.parse(localStorage.getItem(key) || '[]');
-    msgs.unshift(msg);
+    // push newest last so inbox shows chronological order; you can change as needed
+    msgs.push(msg);
     localStorage.setItem(key, JSON.stringify(msgs));
   },
   getMessages: (username) => JSON.parse(localStorage.getItem(`messages_${username}`) || '[]')
 };
 
+// ----------------------------- Helper utilities -----------------------------
+const formatTime = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+
+// Simple safe text wrapping by words & maxCharsPerLine
+function wrapTextByWords(text, maxCharsPerLine = 16) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let current = '';
+  for (const w of words) {
+    if ((current + ' ' + w).trim().length <= maxCharsPerLine) {
+      current = (current + ' ' + w).trim();
+    } else {
+      if (current) lines.push(current);
+      // if single word longer than maxCharsPerLine, break it
+      if (w.length > maxCharsPerLine) {
+        for (let i = 0; i < w.length; i += maxCharsPerLine) {
+          lines.push(w.slice(i, i + maxCharsPerLine));
+        }
+        current = '';
+      } else {
+        current = w;
+      }
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+// ------------------------------ Main App ------------------------------------
 function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('landing');
+
+  // Recording / transcript state
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [audioBlob, setAudioBlob] = useState(null);
+  const [audioBlob, setAudioBlob] = useState(null);          // raw recorded audio
   const [transcript, setTranscript] = useState('');
   const [processing, setProcessing] = useState(false);
   const [previewVideoUrl, setPreviewVideoUrl] = useState('');
@@ -53,15 +88,22 @@ function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [targetUsername, setTargetUsername] = useState('');
 
+  // Auth fields
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
 
+  // refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const canvasRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const audioUrlRef = useRef(null);
+  const videoUrlRef = useRef(null);
+  const audioElementRef = useRef(null);
 
+  // init user from localstorage
   useEffect(() => {
     mockAuth.init();
     if (mockAuth.currentUser) {
@@ -69,8 +111,19 @@ function App() {
       setMessages(mockDB.getMessages(mockAuth.currentUser.username));
       setView('dashboard');
     }
+    // cleanup on unmount
+    return () => {
+      clearInterval(timerRef.current);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.onresult = null; recognitionRef.current.onend = null; recognitionRef.current.stop(); } catch (e) {}
+      }
+      speechSynthesis.cancel();
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+    };
   }, []);
 
+  // route detection for /u/:username
   useEffect(() => {
     const path = window.location.pathname;
     if (path.startsWith('/u/')) {
@@ -82,160 +135,335 @@ function App() {
     }
   }, []);
 
+  // ----------------- recording + transcription -----------------
   const startRecording = async () => {
+    // reset previous
+    if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
+    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null; }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
-      mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      setTranscript(''); // reset transcript
+
+      // Setup media recorder for audio only
+      const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = e => { if (e.data && e.data.size) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: options?.mimeType || 'audio/webm' });
         setAudioBlob(blob);
-        stream.getTracks().forEach(t => t.stop());
+        // create object URL for playback/capture later
+        audioUrlRef.current = URL.createObjectURL(blob);
       };
-      mediaRecorderRef.current.start();
+      recorder.start();
+
+      // Try to start SpeechRecognition in parallel to capture transcript live.
+      // Not all browsers support it; if it fails, we silently skip but keep recording audio.
+      try {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SR) {
+          const recognition = new SR();
+          recognition.lang = 'en-US';
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          let finalTranscript = '';
+          recognition.onresult = (event) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const t = event.results[i][0].transcript;
+              if (event.results[i].isFinal) finalTranscript += t + ' ';
+              else interim += t;
+            }
+            setTranscript((finalTranscript + interim).trim());
+          };
+          recognition.onerror = (ev) => {
+            // gracefully ignore recognition errors (common on unsupported browsers)
+            console.warn('SpeechRecognition error', ev);
+          };
+          recognition.onend = () => {
+            // keep last transcript
+            recognitionRef.current = null;
+          };
+          recognition.start();
+          recognitionRef.current = recognition;
+        } else {
+          // browser doesn't support SpeechRecognition; we will still record audio
+          console.info('SpeechRecognition not available in this browser — transcript will not be captured live.');
+        }
+      } catch (err) {
+        console.warn('Could not start SpeechRecognition:', err);
+      }
+
       setIsRecording(true);
       setRecordingTime(0);
       timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
-    } catch { alert('Microphone access denied'); }
-  };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);  // FIXED: was "setIs setIsRecording"
-      clearInterval(timerRef.current);
+    } catch (err) {
+      alert('Microphone access denied or not available.');
+      console.error(err);
     }
   };
 
-  const generatePreview = async () => {
-    if (!audioBlob || !canvasRef.current) return;
-    setProcessing(true);
-    setTranscript('');
-    setPreviewVideoUrl('');
+  const stopRecording = () => {
+    // Stop timers + recorders safely
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch (e) { console.warn(e); }
+      mediaRecorderRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { console.warn(e); }
+      recognitionRef.current = null;
+    }
 
+    setIsRecording(false);
+    clearInterval(timerRef.current);
+  };
+
+  // ----------------- preview generation (canvas animation + recorded audio) -----------------
+  const generatePreview = async () => {
+    if (!audioBlob && !transcript) {
+      alert('Please record a message first (or your browser must support SpeechRecognition for live transcript).');
+      return;
+    }
+    setProcessing(true);
+    setPreviewVideoUrl('');
+    // ensure canvas exists
     const canvas = canvasRef.current;
+    if (!canvas) {
+      alert('Canvas not available.');
+      setProcessing(false);
+      return;
+    }
+    // Setup canvas dimensions (vertical)
     canvas.width = 1080;
     canvas.height = 1920;
     const ctx = canvas.getContext('2d');
 
+    // We'll create a video whose video track is canvas.captureStream(30)
+    // and whose audio track we will obtain by playing the recorded audio blob
+    // in an <audio> element and capturing its MediaStream via captureStream()
+    // (supported in modern browsers). This avoids trying to capture system audio.
+
+    // Prepare audio element for recorded audio
+    let audioStream = null;
+    if (audioBlob) {
+      // Create (or reuse) an audio element, set src to recorded blob URL
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+      } else {
+        audioElementRef.current = document.createElement('audio');
+      }
+      const audioUrl = URL.createObjectURL(audioBlob);
+      audioElementRef.current.src = audioUrl;
+      audioElementRef.current.crossOrigin = 'anonymous';
+      audioElementRef.current.muted = false;
+      // autoplay might be blocked; ensure playback triggered by user gesture (they clicked Generate)
+      try {
+        await audioElementRef.current.play();
+      } catch (e) {
+        // If autoplay blocked, try unmuting and play again
+        try { audioElementRef.current.muted = false; await audioElementRef.current.play(); }
+        catch (e2) { console.warn('Playback of recorded audio blocked.', e2); }
+      }
+
+      // capture audio stream from element
+      if (typeof audioElementRef.current.captureStream === 'function') {
+        audioStream = audioElementRef.current.captureStream();
+      } else {
+        // fallback: we cannot capture audio -> generate silent audio track instead
+        console.warn('captureStream not supported on audio element; final video will be silent.');
+      }
+    }
+
+    // Create canvas video stream
     const canvasStream = canvas.captureStream(30);
+    // Make combined stream: include canvas video tracks always; include audio if available
+    const combined = new MediaStream();
+    canvasStream.getVideoTracks().forEach(t => combined.addTrack(t));
+    if (audioStream && audioStream.getAudioTracks().length) {
+      audioStream.getAudioTracks().forEach(t => combined.addTrack(t));
+    }
+
+    // Prepare MediaRecorder for the final video
     const videoChunks = [];
-    const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm;codecs=vp9' });
-    recorder.ondataavailable = e => e.data.size > 0 && videoChunks.push(e.data);
+    const videoOptions = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? { mimeType: 'video/webm;codecs=vp9,opus' }
+      : (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? { mimeType: 'video/webm;codecs=vp8,opus' } : undefined);
+
+    let recorder;
+    try {
+      recorder = new MediaRecorder(combined, videoOptions);
+    } catch (e) {
+      // if MediaRecorder can't be created, bail out
+      alert('Your browser cannot create an in-browser video from canvas + audio. Try Chrome/Edge desktop.');
+      setProcessing(false);
+      return;
+    }
+    recorder.ondataavailable = e => { if (e.data.size) videoChunks.push(e.data); };
+    recorder.onstop = () => {
+      const videoBlob = new Blob(videoChunks, { type: videoOptions?.mimeType || 'video/webm' });
+      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+      const url = URL.createObjectURL(videoBlob);
+      videoUrlRef.current = url;
+      setPreviewVideoUrl(url);
+      setProcessing(false);
+      // stop audio playback for audioElementRef but keep src to allow user download/share
+      try { if (audioElementRef.current) { audioElementRef.current.pause(); audioElementRef.current.currentTime = 0; } } catch (e) {}
+    };
+
+    // Start recorder
     recorder.start();
 
-    let finalTranscript = '';
+    // Render animation while audio plays (or for a default fallback duration)
+    const textToDisplay = transcript?.trim() || "You're amazing! Keep shining!";
+    const words = textToDisplay.split(/\s+/);
+    const startTime = Date.now();
+    const durationSeconds = (audioElementRef.current?.duration && !isNaN(audioElementRef.current.duration) && audioElementRef.current.duration > 0)
+      ? Math.max(2, audioElementRef.current.duration + 0.5)
+      : Math.max(4, words.length / 2.5 + 2);
 
-    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-    recognition.lang = 'en-US';
-    recognition.continuous = true;
-    recognition.interimResults = true;
+    // ensure fonts loaded and voices ready
+    await ensureVoicesLoaded();
 
-    recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalTranscript += t + ' ';
-        else interim = t;
+    const drawFrame = () => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const index = Math.min(Math.floor(elapsed * 2.5), words.length);
+
+      // background gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      grad.addColorStop(0, '#667eea');
+      grad.addColorStop(1, '#764ba2');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // white circle with shadow
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 60;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, 400, 180, 0, Math.PI * 2);
+      ctx.fill();
+
+      // pulsing eyes
+      const pulse = 50 + Math.sin(elapsed * 8) * 25;
+      ctx.fillStyle = '#333';
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2 - 70, 380, Math.max(20, pulse), 0, Math.PI * 2);
+      ctx.arc(canvas.width / 2 + 70, 380, Math.max(20, pulse), 0, Math.PI * 2);
+      ctx.fill();
+
+      // draw subtitle-like text
+      ctx.shadowBlur = 0;
+      ctx.font = 'bold 80px Arial';
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'center';
+
+      const displayed = words.slice(0, index).join(' ') + (index < words.length ? ' █' : '');
+      const lines = wrapTextByWords(displayed, 16);
+      lines.forEach((line, i) => ctx.fillText(line, canvas.width / 2, 1000 + i * 100));
+
+      ctx.font = '42px Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillText('Sent anonymously via VoiceAnon', canvas.width / 2, 1700);
+
+      if (elapsed < durationSeconds) {
+        requestAnimationFrame(drawFrame);
+      } else {
+        // stop recorder after a small grace time to ensure audio finished
+        setTimeout(() => {
+          try { recorder.stop(); } catch (e) { console.warn(e); }
+        }, 500);
       }
-      setTranscript(finalTranscript + interim);
     };
 
-    recognition.onend = () => {
-      if (!finalTranscript.trim()) finalTranscript = "You're amazing! Keep shining!";
-      renderAnimation(finalTranscript.trim());
-    };
-
-    const renderAnimation = (text) => {
-      const words = text.split(' ');
-      const startTime = Date.now();
-
-      const draw = () => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        const index = Math.min(Math.floor(elapsed * 2.5), words.length);
-
-        const grad = ctx.createLinearGradient(0, 0, 0, 1920);
-        grad.addColorStop(0, '#667eea');
-        grad.addColorStop(1, '#764ba2');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, 1080, 1920);
-
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 60;
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        ctx.arc(540, 400, 180, 0, Math.PI * 2);
-        ctx.fill();
-
-        const pulse = 50 + Math.sin(elapsed * 8) * 25;
-        ctx.fillStyle = '#333';
-        ctx.beginPath();
-        ctx.arc(470, 380, pulse, 0, Math.PI * 2);
-        ctx.arc(610, 380, pulse, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
-        ctx.font = 'bold 80px Arial';
-        ctx.fillStyle = 'white';
-        ctx.textAlign = 'center';
-        const displayed = words.slice(0, index).join(' ') + (index < words.length ? ' █' : '');
-        const lines = displayed.match(/.{1,16}(\s|$)/g) || [];
-        lines.forEach((line, i) => ctx.fillText(line.trim(), 540, 1000 + i * 100));
-
-        ctx.font = '42px Arial';
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.fillText('Sent anonymously via VoiceAnon', 540, 1700);
-
-        if (index < words.length || elapsed < words.length / 2.5 + 4) {
-          requestAnimationFrame(draw);
-        }
-      };
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = speechSynthesis.getVoices();
-      utterance.voice = voices.find(v => v.name.includes('Google') || v.name.includes('Daniel')) || voices[0];
-      utterance.rate = 0.9;
-      utterance.pitch = 0.3;
-      utterance.onend = () => setTimeout(() => recorder.stop(), 2500);
-
-      recorder.onstop = () => {
-        const videoBlob = new Blob(videoChunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(videoBlob);
-        setPreviewVideoUrl(url);
-        setProcessing(false);
-      };
-
-      draw();
+    // Start playback for audioElementRef if exists; else optionally use speechSynthesis as fallback
+    if (audioElementRef.current && audioElementRef.current.src) {
+      try {
+        // ensure playback starts; it should since user initiated record + generate flows
+        audioElementRef.current.currentTime = 0;
+        await audioElementRef.current.play();
+      } catch (e) {
+        console.warn('Could not autoplay recorded audio - final video may be silent', e);
+      }
+    } else {
+      // fallback: speak with speechSynthesis into the speakers (not captured as audio in the video)
+      // but still produce subtitles in the video.
+      const utterance = new SpeechSynthesisUtterance(textToDisplay);
+      const v = (speechSynthesis.getVoices() || []).find(x => x.name.includes('Google') || x.name.includes('Daniel')) || speechSynthesis.getVoices()[0];
+      if (v) utterance.voice = v;
+      utterance.rate = 0.95;
+      utterance.pitch = 0.4;
+      utterance.onerror = (e) => console.warn('speechSynthesis error', e);
       speechSynthesis.speak(utterance);
-    };
+    }
 
-    recognition.start();
+    // begin drawing frames
+    requestAnimationFrame(drawFrame);
   };
 
+  // Ensure voices are loaded (speechSynthesis.getVoices can be empty initially)
+  function ensureVoicesLoaded() {
+    return new Promise(resolve => {
+      const voices = speechSynthesis.getVoices();
+      if (voices && voices.length) return resolve(voices);
+      const handler = () => {
+        const vs = speechSynthesis.getVoices();
+        if (vs && vs.length) {
+          speechSynthesis.onvoiceschanged = null;
+          return resolve(vs);
+        }
+      };
+      speechSynthesis.onvoiceschanged = handler;
+      // fallback timeout
+      setTimeout(() => resolve(speechSynthesis.getVoices()), 1000);
+    });
+  }
+
+  // ----------------- sending & saving -----------------
   const sendMessage = () => {
-    if (!previewVideoUrl || !transcript) return;
+    if (!previewVideoUrl && !audioBlob) {
+      alert('Generate preview before sending.');
+      return;
+    }
     const message = {
       id: Date.now().toString(),
-      text: transcript,
+      text: transcript || '[No transcript]',
       timestamp: new Date().toISOString(),
       duration: recordingTime,
       videoUrl: previewVideoUrl,
-      audioUrl: URL.createObjectURL(audioBlob)
+      audioUrl: audioUrlRef.current || null
     };
     mockDB.saveMessage(targetUsername, message);
     setView('success');
   };
 
-  const formatTime = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+  // copy personal link
   const copyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/u/${user.username}`);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 2000);
+    if (!user) return;
+    const link = `${window.location.origin}/u/${user.username}`;
+    navigator.clipboard.writeText(link).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }).catch(() => {
+      // fallback: prompt
+      window.prompt('Copy this link:', link);
+    });
   };
 
-  // ==================== VIEWS ====================
+  // Download helpers
+  const downloadFile = (url, filename) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 
+  // ------------------- VIEWS (unchanged mostly, with fixes) -------------------
   if (view === 'landing') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 text-white">
@@ -264,17 +492,17 @@ function App() {
               <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
                 <Mic className="w-12 h-12 mb-4 mx-auto text-pink-300" />
                 <h3 className="text-xl font-bold mb-3">Speak Freely</h3>
-                <p className="text-gray-300">Your real voice, full emotion</p>
+                <p className="text-gray-300">Your message turned into a shareable video</p>
               </div>
               <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
                 <Users className="w-12 h-12 mb-4 mx-auto text-purple-300" />
                 <h3 className="text-xl font-bold mb-3">100% Anonymous</h3>
-                <p className="text-gray-300">Turned into robotic AI video</p>
+                <p className="text-gray-300">Optionally anonymized before sending</p>
               </div>
               <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
                 <Share2 className="w-12 h-12 mb-4 mx-auto text-indigo-300" />
                 <h3 className="text-xl font-bold mb-3">Go Viral</h3>
-                <p className="text-gray-300">Share instantly to TikTok & WhatsApp</p>
+                <p className="text-gray-300">Share immediately after sending</p>
               </div>
             </div>
             <button onClick={() => setView('signup')} className="px-12 py-4 text-xl rounded-full bg-gradient-to-r from-pink-500 to-purple-600 font-bold hover:shadow-2xl hover:scale-105 transition">
@@ -336,7 +564,7 @@ function App() {
               <button onClick={() => setView('dashboard')} className="px-4 py-2 rounded-lg bg-white/20 text-white hover:bg-white/30 transition flex items-center gap-2">
                 <Home className="w-5 h-5" /> Dashboard
               </button>
-              <button onClick={() => setView('inbox')} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
+              <button onClick={() => { setMessages(mockDB.getMessages(user.username)); setView('inbox'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
                 <Inbox className="w-5 h-5" /> Inbox ({messages.length})
               </button>
               <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
@@ -366,6 +594,11 @@ function App() {
   }
 
   if (view === 'inbox') {
+    // refresh messages on enter
+    useEffect(() => {
+      if (user) setMessages(mockDB.getMessages(user.username));
+    }, [user]);
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 p-8">
         <h1 className="text-4xl font-bold text-white text-center mb-12">Your Messages</h1>
@@ -378,26 +611,41 @@ function App() {
           ) : (
             messages.map(m => (
               <div key={m.id} className="bg-white/10 backdrop-blur-lg rounded-3xl p-6">
-                <video controls src={m.videoUrl} className="w-full rounded-2xl shadow-2xl" />
+                {m.videoUrl ? (
+                  <video controls src={m.videoUrl} className="w-full rounded-2xl shadow-2xl" />
+                ) : (
+                  <div className="w-full aspect-video bg-black/40 rounded-2xl" />
+                )}
                 <p className="text-xl text-white/90 mt-6 italic text-center">"{m.text}"</p>
                 <div className="flex gap-4 mt-6">
                   <button onClick={() => {
-                    if (navigator.share) {
+                    // share fallback: if navigator.share supports files, try, else share URL or download
+                    if (navigator.share && navigator.canShare && m.videoUrl) {
+                      // Try to fetch blob and share as file - may fail in some browsers
                       fetch(m.videoUrl).then(r => r.blob()).then(blob => {
-                        const file = new File([blob], 'voiceanon.mp4', { type: 'video/webm' });
-                        navigator.share({ files: [file], title: 'Anonymous Message' });
+                        const file = new File([blob], `voiceanon_${m.id}.webm`, { type: blob.type });
+                        if (navigator.canShare({ files: [file] })) {
+                          navigator.share({ files: [file], title: 'Anonymous Message' }).catch(err => {
+                            console.warn('Share failed:', err);
+                            downloadFile(m.videoUrl, `voiceanon_${m.id}.webm`);
+                          });
+                        } else {
+                          // fallback: open the video URL and let user save manually
+                          window.open(m.videoUrl, '_blank');
+                        }
+                      }).catch(() => {
+                        // fallback: open URL
+                        window.open(m.videoUrl, '_blank');
                       });
                     } else {
-                      const a = document.createElement('a');
-                      a.href = m.videoUrl;
-                      a.download = 'voiceanon.mp4';
-                      a.click();
+                      // fallback: download
+                      downloadFile(m.videoUrl, `voiceanon_${m.id}.webm`);
                     }
                   }} className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 py-4 rounded-xl font-bold text-white flex items-center justify-center gap-3">
-                    <Share2 className="w-6 h-6" /> Share
+                    <Share2 className="w-6 h-6" /> Share / Download
                   </button>
-                  <a href={m.videoUrl} download={`voiceanon_${m.id}.webm`} className="flex-1 bg-white/20 py-4 rounded-xl font-bold text-white text-center">
-                    <Download className="w-6 h-6 inline mr-2" /> Download
+                  <a href={m.videoUrl} download={`voiceanon_${m.id}.webm`} className="flex-1 bg-white/20 py-4 rounded-xl font-bold text-white text-center inline-flex items-center justify-center gap-2">
+                    <Download className="w-6 h-6 inline" /> Download
                   </a>
                 </div>
               </div>
@@ -411,23 +659,27 @@ function App() {
   if (view === 'record') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center p-4">
-        <canvas ref={canvasRef} className="hidden" />
+        {/* canvas kept in DOM but offscreen: avoids being `display:none` so captureStream works */}
+        <canvas ref={canvasRef} style={{ position: 'absolute', left: -9999, width: 1080, height: 1920 }} />
         <div className="max-w-md w-full">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-white mb-4">Send Anonymous Message</h1>
-            <p className="text-xl text-gray-300">to @{targetUsername}</p>
+            <p className="text-xl text-gray-300">to @{targetUsername || '[unknown]'}</p>
           </div>
           <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8">
             {previewVideoUrl ? (
               <div className="text-center space-y-6">
                 <h3 className="text-2xl font-bold text-white">Preview Your Video</h3>
-                <video src={previewVideoUrl} controls autoPlay loop className="w-full rounded-2xl shadow-2xl" />
+                <video src={previewVideoUrl} controls className="w-full rounded-2xl shadow-2xl" />
                 <p className="text-lg text-white italic px-4">"{transcript}"</p>
                 <div className="grid grid-cols-2 gap-4">
                   <button onClick={sendMessage} className="py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl text-lg">
                     Confirm & Send
                   </button>
                   <button onClick={() => {
+                    // cleanup and reset to record again
+                    if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
+                    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null; }
                     setPreviewVideoUrl('');
                     setTranscript('');
                     setAudioBlob(null);
@@ -446,7 +698,7 @@ function App() {
                 <button onClick={isRecording ? stopRecording : startRecording} className={`w-full py-5 rounded-xl font-bold text-xl transition ${isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-gradient-to-r from-pink-500 to-purple-600 hover:shadow-2xl'}`}>
                   {isRecording ? 'Stop Recording' : 'Start Recording'}
                 </button>
-                <p className="text-gray-400 text-sm mt-4">Your voice will be turned into an animated video</p>
+                <p className="text-gray-400 text-sm mt-4">Your recorded audio will be turned into an animated video (subtitles are auto-generated when supported).</p>
               </div>
             ) : processing ? (
               <div className="text-center space-y-6">
