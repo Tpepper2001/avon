@@ -48,12 +48,12 @@ function App() {
   const [audioBlob, setAudioBlob] = useState(null);
   const [transcript, setTranscript] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [previewVideoUrl, setPreviewVideoUrl] = useState('');
   const [messages, setMessages] = useState([]);
   const [linkCopied, setLinkCopied] = useState(false);
   const [targetUsername, setTargetUsername] = useState('');
-  const [finalVideoUrl, setFinalVideoUrl] = useState('');
 
-  // Auth form
+  // Auth
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
@@ -63,7 +63,6 @@ function App() {
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const canvasRef = useRef(null);
-  const videoRecorderRef = useRef(null);
 
   useEffect(() => {
     mockAuth.init();
@@ -106,14 +105,16 @@ function App() {
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
-      setIsRecording(false);
+      setIs  setIsRecording(false);
       clearInterval(timerRef.current);
     }
   };
 
-  const processMessage = async () => {
+  const generatePreview = async () => {
     if (!audioBlob || !canvasRef.current) return;
     setProcessing(true);
+    setTranscript('');
+    setPreviewVideoUrl('');
 
     const canvas = canvasRef.current;
     canvas.width = 1080;
@@ -122,61 +123,73 @@ function App() {
 
     const canvasStream = canvas.captureStream(30);
     const videoChunks = [];
-    videoRecorderRef.current = new MediaRecorder(canvasStream, { mimeType: 'video/webm;codecs=vp9' });
-    videoRecorderRef.current.ondataavailable = e => e.data.size > 0 && videoChunks.push(e.data);
-    videoRecorderRef.current.start();
+    const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm;codecs=vp9' });
+    recorder.ondataavailable = e => e.data.size > 0 && videoChunks.push(e.data);
+    recorder.start();
+
+    let finalTranscript = '';
+    let isActive = true;
 
     const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     recognition.lang = 'en-US';
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    let finalText = '';
-    recognition.onresult = e => {
+    recognition.onresult = (event) => {
       let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) finalText += t + ' ';
-        else interim = t;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += t + ' ';
+        } else {
+          interim = t;
+        }
       }
-      setTranscript(finalText + interim);
+      setTranscript(finalTranscript + interim);
+    };
+
+    recognition.onerror = () => {
+      if (finalTranscript.trim() === '') {
+        finalTranscript = "You're amazing! Keep shining!";
+        setTranscript(finalTranscript);
+      }
+      isActive = false;
     };
 
     recognition.onend = () => {
-      if (!finalText.trim()) finalText = "You're amazing! Keep being you!";
-      setTranscript(finalText.trim());
+      isActive = false;
+      if (!finalTranscript.trim()) {
+        finalTranscript = "You're amazing! Keep shining!";
+        setTranscript(finalTranscript);
+      }
+      renderAnimation(finalTranscript.trim());
+    };
 
-      const utterance = new SpeechSynthesisUtterance(finalText.trim());
-      const voices = speechSynthesis.getVoices();
-      utterance.voice = voices.find(v => v.name.includes('Google') || v.name.includes('Daniel')) || voices[0];
-      utterance.rate = 0.9;
-      utterance.pitch = 0.3;
-
-      const words = finalText.trim().split(' ');
+    const renderAnimation = (text) => {
+      const words = text.split(' ');
       const startTime = Date.now();
 
       const draw = () => {
         const elapsed = (Date.now() - startTime) / 1000;
         const wordIndex = Math.min(Math.floor(elapsed * 2.5), words.length);
 
-        // Gradient background
+        // Background
         const grad = ctx.createLinearGradient(0, 0, 0, 1920);
         grad.addColorStop(0, '#667eea');
         grad.addColorStop(1, '#764ba2');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 1080, 1920);
 
-        // Robot avatar
+        // Robot
         ctx.shadowColor = 'rgba(0,0,0,0.5)';
         ctx.shadowBlur = 60;
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#fff';
         ctx.beginPath();
         ctx.arc(540, 400, 180, 0, Math.PI * 2);
         ctx.fill();
 
-        // Pulsing eyes
-        const pulse = 50 + Math.sin(elapsed * 8) * 25;
         ctx.fillStyle = '#333';
+        const pulse = 50 + Math.sin(elapsed * 8) * 25;
         ctx.beginPath();
         ctx.arc(470, 380, pulse, 0, Math.PI * 2);
         ctx.arc(610, 380, pulse, 0, Math.PI * 2);
@@ -202,31 +215,44 @@ function App() {
         }
       };
 
-      utterance.onend = () => setTimeout(() => videoRecorderRef.current?.stop(), 2500);
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = speechSynthesis.getVoices();
+      utterance.voice = voices.find(v => v.name.includes('Google') || v.name.includes('Daniel')) || voices[0];
+      utterance.rate = 0.9;
+      utterance.pitch = 0.3;
+
+      utterance.onend = () => {
+        setTimeout(() => recorder.stop(), 2500);
+      };
+
+      recorder.onstop = () => {
+        const videoBlob = new Blob(videoChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(videoBlob);
+        setPreviewVideoUrl(url);
+        setProcessing(false);
+      };
+
       draw();
       speechSynthesis.speak(utterance);
     };
 
-    videoRecorderRef.current.onstop = () => {
-      const videoBlob = new Blob(videoChunks, { type: 'video/webm' });
-      const videoUrl = URL.createObjectURL(videoBlob);
-      setFinalVideoUrl(videoUrl);
+    recognition.start();
+  };
 
-      const message = {
-        id: Date.now().toString(),
-        text: finalText.trim(),
-        timestamp: new Date().toISOString(),
-        duration: recordingTime,
-        videoUrl,
-        audioUrl: URL.createObjectURL(audioBlob)
-      };
+  const sendMessage = () => {
+    if (!previewVideoUrl || !transcript) return;
 
-      mockDB.saveMessage(targetUsername, message);
-      setView('success');
-      setProcessing(false);
+    const message = {
+      id: Date.now().toString(),
+      text: transcript,
+      timestamp: new Date().toISOString(),
+      duration: recordingTime,
+      videoUrl: previewVideoUrl,
+      audioUrl: URL.createObjectURL(audioBlob)
     };
 
-    recognition.start();
+    mockDB.saveMessage(targetUsername, message);
+    setView('success');
   };
 
   const formatTime = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
@@ -273,25 +299,8 @@ function App() {
               Anonymous Voice Messages, Reimagined
             </h1>
             <p className="text-2xl mb-12 text-gray-300">
-              Record a voice note → AI turns it into a stunning animated video with robotic voice & subtitles
+              Record → Preview → Send stunning animated videos with robotic voice
             </p>
-            <div className="grid md:grid-cols-3 gap-8 mb-16">
-              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
-                <Mic className="w-12 h-12 mb-4 mx-auto text-pink-300" />
-                <h3 className="text-xl font-bold mb-3">Speak Freely</h3>
-                <p className="text-gray-300">Your real voice, full emotion</p>
-              </div>
-              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
-                <Users className="w-12 h-12 mb-4 mx-auto text-purple-300" />
-                <h3 className="text-xl font-bold mb-3">100% Anonymous</h3>
-                <p className="text-gray-300">Turned into robotic AI video</p>
-              </div>
-              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
-                <Share2 className="w-12 h-12 mb-4 mx-auto text-indigo-300" />
-                <h3 className="text-xl font-bold mb-3">Go Viral</h3>
-                <p className="text-gray-300">Share instantly to TikTok & WhatsApp</p>
-              </div>
-            </div>
             <button onClick={() => setView('signup')} className="px-12 py-4 text-xl rounded-full bg-gradient-to-r from-pink-500 to-purple-600 font-bold hover:shadow-2xl hover:scale-105 transition">
               Create Your Link Free
             </button>
@@ -301,37 +310,23 @@ function App() {
     );
   }
 
-  if (view === 'signin') {
+  // Sign In / Sign Up (unchanged, working)
+  if (view === 'signin' || view === 'signup') {
+    const isSignUp = view === 'signup';
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
-          <h2 className="text-3xl font-bold text-white mb-6 text-center">Welcome Back</h2>
-          <form onSubmit={e => { e.preventDefault(); mockAuth.signIn(authEmail, authPassword).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
+          <h2 className="text-3xl font-bold text-white mb-6 text-center">{isSignUp ? 'Create Account' : 'Welcome Back'}</h2>
+          <form onSubmit={e => { e.preventDefault(); 
+            (isSignUp ? mockAuth.signUp(authEmail, authPassword, authUsername) : mockAuth.signIn(authEmail, authPassword))
+              .then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); })
+              .catch(e => alert(e.message));
+          }} className="space-y-4">
+            {isSignUp && <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />}
             <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
-              Sign In
-            </button>
-          </form>
-          <p className="text-center text-white/60 mt-4">
-            No account? <button onClick={() => setView('signup')} className="text-pink-300 hover:underline">Sign Up</button>
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === 'signup') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
-        <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
-          <h2 className="text-3xl font-bold text-white mb-6 text-center">Create Account</h2>
-          <form onSubmit={e => { e.preventDefault(); mockAuth.signUp(authEmail, authPassword, authUsername).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
-            <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
-            <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
-            <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
-            <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
-              Create Account
+              {isSignUp ? 'Create Account' : 'Sign In'}
             </button>
           </form>
         </div>
@@ -348,13 +343,13 @@ function App() {
               <Mic className="w-8 h-8" /> VoiceAnon
             </div>
             <div className="flex gap-4">
-              <button onClick={() => setView('dashboard')} className="px-4 py-2 rounded-lg bg-white/20 text-white hover:bg-white/30 transition flex items-center gap-2">
+              <button onClick={() => setView('dashboard')} className="px-4 py-2 rounded-lg bg-white/20 text-white flex items-center gap-2">
                 <Home className="w-5 h-5" /> Dashboard
               </button>
-              <button onClick={() => setView('inbox')} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
+              <button onClick={() => setView('inbox')} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 flex items-center gap-2">
                 <Inbox className="w-5 h-5" /> Inbox ({messages.length})
               </button>
-              <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
+              <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 flex items-center gap-2">
                 <LogOut className="w-5 h-5" />
               </button>
             </div>
@@ -419,7 +414,26 @@ function App() {
             <p className="text-xl text-gray-300">to @{targetUsername}</p>
           </div>
           <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8">
-            {!audioBlob ? (
+            {previewVideoUrl ? (
+              <div className="text-center space-y-6">
+                <h3 className="text-2xl font-bold text-white">Preview Your Video</h3>
+                <video src={previewVideoUrl} controls autoPlay loop className="w-full rounded-2xl shadow-2xl" />
+                <p className="text-lg text-white italic px-4">"{transcript}"</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <button onClick={sendMessage} className="py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl text-lg">
+                    Confirm & Send
+                  </button>
+                  <button onClick={() => {
+                    setPreviewVideoUrl('');
+                    setTranscript('');
+                    setAudioBlob(null);
+                    setRecordingTime(0);
+                  }} className="py-4 bg-white/20 text-white font-bold rounded-xl">
+                    Re-record
+                  </button>
+                </div>
+              </div>
+            ) : !audioBlob ? (
               <div className="text-center">
                 <div className={`w-32 h-32 mx-auto mb-6 rounded-full flex items-center justify-center ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-gradient-to-r from-pink-500 to-purple-600'}`}>
                   {isRecording ? <Square className="w-16 h-16 text-white" /> : <Mic className="w-16 h-16 text-white" />}
@@ -430,26 +444,19 @@ function App() {
                 </button>
                 <p className="text-gray-400 text-sm mt-4">Your voice will be turned into an animated video</p>
               </div>
-            ) : (
-              <div className="text-center">
-                <CheckCircle className="w-32 h-32 mx-auto text-green-400 mb-6" />
-                <h3 className="text-2xl font-bold text-white mb-4">Recording Complete!</h3>
-                <p className="text-gray-300 mb-8">Duration: {formatTime(recordingTime)}</p>
-                {processing ? (
-                  <div className="space-y-6">
-                    <div className="flex justify-center gap-4">
-                      <div className="w-4 h-4 bg-pink-500 rounded-full animate-bounce"></div>
-                      <div className="w-4 h-4 bg-purple-500 rounded-full animate-bounce delay-100"></div>
-                      <div className="w-4 h-4 bg-indigo-500 rounded-full animate-bounce delay-200"></div>
-                    </div>
-                    <p className="text-xl text-white">Generating your animated video...</p>
-                  </div>
-                ) : (
-                  <button onClick={processMessage} className="w-full py-5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold text-xl flex items-center justify-center gap-3">
-                    <Send className="w-6 h-6" /> Send Animated Video
-                  </button>
-                )}
+            ) : processing ? (
+              <div className="text-center space-y-6">
+                <div className="flex justify-center gap-4">
+                  <div className="w-4 h-4 bg-pink-500 rounded-full animate-bounce"></div>
+                  <div className="w-4 h-4 bg-purple-500 rounded-full animate-bounce delay-100"></div>
+                  <div className="w-4 h-4 bg-indigo-500 rounded-full animate-bounce delay-200"></div>
+                </div>
+                <p className="text-xl text-white">Transcribing & generating your video...</p>
               </div>
+            ) : (
+              <button onClick={generatePreview} className="w-full py-5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold text-xl">
+                Generate Preview
+              </button>
             )}
           </div>
         </div>
@@ -466,7 +473,7 @@ function App() {
           <p className="text-2xl text-gray-300 mb-12">
             Your animated video has been delivered to @{targetUsername}
           </p>
-          <button onClick={() => { setView('record'); setAudioBlob(null); setTranscript(''); setFinalVideoUrl(''); }} className="px-12 py-5 bg-white text-purple-900 rounded-full text-xl font-bold">
+          <button onClick={() => { setView('record'); setAudioBlob(null); setTranscript(''); setPreviewVideoUrl(''); setRecordingTime(0); }} className="px-12 py-5 bg-white text-purple-900 rounded-full text-xl font-bold">
             Send Another Message
           </button>
         </div>
