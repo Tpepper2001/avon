@@ -215,6 +215,7 @@ export default function App() {
   };
 
   // ----------------- Generate MP4/Video (FIXED AUDIO) -----------------
+ // ----------------- Generate MP4/Video (CORS FIXED) -----------------
   const generatePreview = async () => {
     if (!transcript && !audioBlob) {
       alert('No audio recorded.');
@@ -228,10 +229,13 @@ export default function App() {
     canvas.height = 1920;
     const ctx = canvas.getContext('2d');
 
-    // 1. Fetch Robotic TTS Audio SECURELY
+    // 1. Fetch Robotic TTS Audio VIA PROXY (Fixes CORS Error)
     const textToSpeak = transcript || "Audio message received.";
-    // Using Brian (The classic donation voice)
-    const ttsUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
+    
+    // Original URL
+    const targetUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
+    // Proxied URL (Bypasses security block)
+    const ttsUrl = `https://corsproxy.io/?` + encodeURIComponent(targetUrl);
     
     // Cleanup previous context/audio
     if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null; }
@@ -247,14 +251,16 @@ export default function App() {
 
     const dest = audioCtx.createMediaStreamDestination();
     
-    // Create a fresh audio element for this run
+    // Create a fresh audio element
     const audioEl = new Audio();
-    audioEl.crossOrigin = "anonymous";
+    audioEl.crossOrigin = "anonymous"; // Required for processing
     audioElementRef.current = audioEl;
 
     try {
-      // Fetch Blob explicitly
+      // Fetch Blob explicitly through the Proxy
       const resp = await fetch(ttsUrl);
+      if (!resp.ok) throw new Error("Proxy fetch failed");
+      
       const blob = await resp.blob();
       const objUrl = URL.createObjectURL(blob);
       ttsObjectUrlRef.current = objUrl;
@@ -263,18 +269,18 @@ export default function App() {
       // Wait for load
       await new Promise((resolve, reject) => {
         audioEl.onloadeddata = resolve;
-        audioEl.onerror = reject;
+        audioEl.onerror = (e) => reject(new Error("Audio load error"));
       });
 
       // Hook up Web Audio API
       const source = audioCtx.createMediaElementSource(audioEl);
       source.connect(dest); // To Recorder
-      source.connect(audioCtx.destination); // To Speakers (to hear it while processing)
+      source.connect(audioCtx.destination); // To Speakers
       
       await audioEl.play();
     } catch (e) {
       console.error("Audio generation failed:", e);
-      alert("Could not generate robotic audio. Check internet connection.");
+      alert("Could not generate audio. The text-to-speech server might be busy. Please try again.");
       setProcessing(false);
       return;
     }
@@ -283,13 +289,14 @@ export default function App() {
     const canvasStream = canvas.captureStream(30);
     const combined = new MediaStream([
       ...canvasStream.getVideoTracks(),
-      ...dest.stream.getAudioTracks() // THIS IS THE KEY FIX
+      ...dest.stream.getAudioTracks() 
     ]);
 
     // 3. Recorder Setup
     const mimeType = getSupportedMimeType();
     let recorder;
     try {
+      // Increase bitsPerSecond for better video quality
       recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 2500000 });
     } catch(e) {
       recorder = new MediaRecorder(combined);
