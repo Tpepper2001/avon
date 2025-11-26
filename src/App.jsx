@@ -1,11 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Mic, Square, Download, Share2, Copy, CheckCircle,
-  MessageSquare, LogOut, Inbox, Smartphone
+  MessageSquare, LogOut, Inbox, Smartphone, Play, Pause, Trash2, Send, X
 } from 'lucide-react';
-
-// ... [Keep mockAuth, mockDB, formatTime, wrapTextByWords, getSupportedMimeType exactly as they are] ...
-// (Pasting the full corrected component below for easy copy-paste)
 
 // ------------------ Mock Auth & DB ------------------
 const mockAuth = {
@@ -99,6 +96,9 @@ export default function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [targetUsername, setTargetUsername] = useState('');
   
+  // UI States for WhatsApp Player
+  const [isPlayingPreview, setIsPlayingPreview] = useState(false);
+  
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
@@ -115,6 +115,7 @@ export default function App() {
   const audioElementRef = useRef(null);
   const audioContextRef = useRef(null);
   const ttsObjectUrlRef = useRef(null);
+  const previewAudioRef = useRef(null); // For playing back user's raw recording
 
   useEffect(() => {
     mockAuth.init();
@@ -149,6 +150,7 @@ export default function App() {
     // Cleanup previous
     if (audioUrlRef.current) { URL.revokeObjectURL(audioUrlRef.current); audioUrlRef.current = null; }
     if (previewVideo.url) { URL.revokeObjectURL(previewVideo.url); setPreviewVideo({ url: '', mimeType: '' }); }
+    setAudioBlob(null);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -167,6 +169,7 @@ export default function App() {
       };
       recorder.start();
 
+      // Speech Recognition
       try {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SR) {
@@ -198,10 +201,17 @@ export default function App() {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
     if (recognitionRef.current) recognitionRef.current.stop();
     setIsRecording(false);
     clearInterval(timerRef.current);
+  };
+
+  const cancelRecording = () => {
+    stopRecording();
+    setAudioBlob(null);
+    setTranscript('');
+    setRecordingTime(0);
   };
 
   // ----------------- Generate MP4/Video (FIXED AUDIO) -----------------
@@ -220,6 +230,7 @@ export default function App() {
 
     // 1. Fetch Robotic TTS Audio SECURELY
     const textToSpeak = transcript || "Audio message received.";
+    // Using Brian (The classic donation voice)
     const ttsUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
     
     // Cleanup previous context/audio
@@ -230,6 +241,10 @@ export default function App() {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     const audioCtx = new AudioContext();
     audioContextRef.current = audioCtx;
+    
+    // IMPORTANT: Resume context to bypass autoplay blocks
+    await audioCtx.resume();
+
     const dest = audioCtx.createMediaStreamDestination();
     
     // Create a fresh audio element for this run
@@ -238,7 +253,7 @@ export default function App() {
     audioElementRef.current = audioEl;
 
     try {
-      // Fetch Blob explicitly to avoid Tainted Canvas/Stream issues
+      // Fetch Blob explicitly
       const resp = await fetch(ttsUrl);
       const blob = await resp.blob();
       const objUrl = URL.createObjectURL(blob);
@@ -254,12 +269,12 @@ export default function App() {
       // Hook up Web Audio API
       const source = audioCtx.createMediaElementSource(audioEl);
       source.connect(dest); // To Recorder
-      source.connect(audioCtx.destination); // To Speakers (optional, helps timing)
+      source.connect(audioCtx.destination); // To Speakers (to hear it while processing)
       
       await audioEl.play();
     } catch (e) {
       console.error("Audio generation failed:", e);
-      alert("Could not generate audio. Check internet.");
+      alert("Could not generate robotic audio. Check internet connection.");
       setProcessing(false);
       return;
     }
@@ -275,7 +290,7 @@ export default function App() {
     const mimeType = getSupportedMimeType();
     let recorder;
     try {
-      recorder = new MediaRecorder(combined, { mimeType });
+      recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 2500000 });
     } catch(e) {
       recorder = new MediaRecorder(combined);
     }
@@ -477,44 +492,130 @@ export default function App() {
       setView('success');
     };
 
+    // Toggle play for the preview audio (User's voice)
+    const togglePreviewPlay = () => {
+        if (!previewAudioRef.current) {
+            previewAudioRef.current = new Audio(audioUrlRef.current);
+            previewAudioRef.current.onended = () => setIsPlayingPreview(false);
+        }
+        if (isPlayingPreview) {
+            previewAudioRef.current.pause();
+            setIsPlayingPreview(false);
+        } else {
+            previewAudioRef.current.play();
+            setIsPlayingPreview(true);
+        }
+    };
+
     return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4 font-mono">
+      // WhatsApp Background Color: #0b141a or #111b21
+      <div className="min-h-screen bg-[#111b21] flex flex-col items-center relative font-sans">
         <canvas ref={canvasRef} className="hidden" />
-        <div className="max-w-md w-full bg-black border border-gray-800 p-6 rounded-xl shadow-2xl">
-          <h2 className="text-center text-green-500 text-2xl mb-2">@{targetUsername}</h2>
-          <p className="text-center text-gray-500 text-sm mb-6">Will receive a robotic MP4 video</p>
-          
-          {previewVideo.url ? (
-            <div className="space-y-4">
-              <video src={previewVideo.url} controls className="w-full rounded border border-gray-700" />
-              <div className="flex gap-2">
-                <button onClick={sendMessage} className="flex-1 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded">Send Now</button>
-                <button onClick={() => { setPreviewVideo({url:'', mimeType:''}); setAudioBlob(null); setTranscript(''); }} className="px-4 py-3 bg-gray-800 text-white rounded">Retry</button>
-              </div>
+        
+        {/* Header */}
+        <div className="w-full bg-[#202c33] p-4 flex items-center gap-4 shadow-md z-10">
+            <div className="w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center text-white font-bold text-lg">
+                {targetUsername ? targetUsername[0].toUpperCase() : '?'}
             </div>
-          ) : processing ? (
-             <div className="text-center py-12 text-green-500 animate-pulse">
-               Generating {getSupportedMimeType().includes('mp4') ? 'MP4' : 'Video'}...
-             </div>
-          ) : (
-            <div className="text-center">
-              <button 
-                onClick={isRecording ? stopRecording : startRecording}
-                className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 transition-all ${isRecording ? 'bg-red-600 scale-110 shadow-[0_0_20px_red]' : 'bg-gray-800 hover:bg-gray-700 border border-green-500'}`}
-              >
-                {isRecording ? <Square className="text-white fill-current" /> : <Mic className="text-green-500 w-10 h-10" />}
-              </button>
-              <div className="text-green-500 text-xl font-bold mb-4">{formatTime(recordingTime)}</div>
-              <p className="text-gray-400 text-sm italic min-h-[3rem] px-4">"{transcript || 'Waiting for speech...'}"</p>
-              
-              {!isRecording && audioBlob && (
-                <button onClick={generatePreview} className="w-full mt-6 py-4 bg-green-600 text-white font-bold rounded hover:bg-green-500 uppercase tracking-widest">
-                  Generate Video
-                </button>
-              )}
+            <div>
+                <h2 className="text-white font-bold">@{targetUsername}</h2>
+                <p className="text-xs text-gray-400">Anonymous Message</p>
             </div>
-          )}
         </div>
+
+        {/* Chat Area Background */}
+        <div className="flex-1 w-full bg-[#0b141a] relative flex items-center justify-center p-4 bg-opacity-95" 
+             style={{backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundBlendMode: 'overlay'}}>
+            
+            {/* Display Video Preview ONLY if generated */}
+            {previewVideo.url ? (
+                <div className="bg-[#202c33] p-2 rounded-lg max-w-sm w-full shadow-lg">
+                    <video src={previewVideo.url} controls className="w-full rounded bg-black" />
+                    <div className="flex justify-between items-center mt-2 px-2 pb-1">
+                         <span className="text-gray-400 text-xs">{formatTime(recordingTime)}</span>
+                         <div className="flex gap-2">
+                             <button onClick={() => { setPreviewVideo({url:'', mimeType:''}); setProcessing(false); }} className="text-red-400 hover:text-red-300"><Trash2 size={20} /></button>
+                             <button onClick={sendMessage} className="bg-[#00a884] p-2 rounded-full text-white"><Send size={20} /></button>
+                         </div>
+                    </div>
+                </div>
+            ) : processing ? (
+                <div className="flex flex-col items-center text-[#00a884] animate-pulse">
+                    <div className="w-16 h-16 border-4 border-[#00a884] border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p>Encrypting Voice...</p>
+                </div>
+            ) : !audioBlob && !isRecording ? (
+                <div className="bg-[#202c33] px-4 py-2 rounded-lg shadow text-gray-300 text-sm">
+                   Tap the microphone to record securely.
+                </div>
+            ) : null}
+
+            {/* Recorded Audio "Bubble" (Before converting to video) */}
+            {!isRecording && audioBlob && !processing && !previewVideo.url && (
+                 <div className="absolute bottom-24 w-full px-4">
+                     <div className="bg-[#005c4b] max-w-sm mx-auto p-3 rounded-tr-none rounded-xl flex flex-col gap-2 shadow-lg">
+                         <div className="flex items-center gap-3">
+                             <button onClick={togglePreviewPlay} className="text-gray-300 hover:text-white">
+                                 {isPlayingPreview ? <Pause size={30} className="fill-current" /> : <Play size={30} className="fill-current" />}
+                             </button>
+                             <div className="flex-1 h-2 bg-[#00a884] bg-opacity-40 rounded-full overflow-hidden relative">
+                                 <div className="absolute top-0 left-0 h-full bg-white opacity-50 w-full animate-pulse"></div>
+                             </div>
+                             <div className="w-10 h-10 rounded-full bg-gray-800 overflow-hidden relative border border-green-500">
+                                  {/* Little robot avatar placeholder */}
+                                  <div className="absolute inset-0 flex items-center justify-center text-[8px] text-green-500">ROBOT</div>
+                             </div>
+                         </div>
+                         <div className="flex justify-between text-xs text-[#badbcc] mt-1">
+                             <span>{formatTime(recordingTime)}</span>
+                             <span>Recorded</span>
+                         </div>
+                     </div>
+                     <div className="max-w-sm mx-auto flex gap-4 mt-4">
+                        <button onClick={cancelRecording} className="p-3 rounded-full bg-[#202c33] text-red-400"><Trash2 /></button>
+                        <button onClick={generatePreview} className="flex-1 py-3 bg-[#00a884] text-white font-bold rounded-full shadow-lg flex items-center justify-center gap-2">
+                             CONVERT TO VIDEO <Smartphone size={18} />
+                        </button>
+                     </div>
+                 </div>
+            )}
+        </div>
+
+        {/* Bottom Input Area (WhatsApp Style) */}
+        {!audioBlob && !processing && !previewVideo.url && (
+            <div className="w-full bg-[#202c33] px-2 py-2 flex items-center justify-between gap-2 z-20">
+                {isRecording ? (
+                    // Recording State UI
+                    <div className="flex-1 flex items-center gap-4 pl-4 animate-pulse">
+                        <span className="text-red-500 text-xs">●</span>
+                        <span className="text-white text-lg font-mono">{formatTime(recordingTime)}</span>
+                        <div className="flex-1 flex gap-1 items-end h-6 opacity-50">
+                             {[...Array(10)].map((_, i) => (
+                                 <div key={i} className="w-1 bg-white rounded-full animate-bounce" style={{height: Math.random() * 20 + 4 + 'px', animationDelay: i * 0.1 + 's'}}></div>
+                             ))}
+                        </div>
+                        <button onClick={cancelRecording} className="text-gray-400 text-sm font-medium mr-4">Cancel</button>
+                    </div>
+                ) : (
+                    // Idle State UI
+                    <div className="flex-1 bg-[#2a3942] rounded-full h-10 flex items-center px-4 text-gray-400 text-sm cursor-not-allowed select-none">
+                        Message @{targetUsername}
+                    </div>
+                )}
+
+                {/* The Big Mic Button */}
+                <button 
+                    onClick={isRecording ? stopRecording : startRecording}
+                    className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg ${isRecording ? 'bg-red-500 scale-110' : 'bg-[#00a884] hover:bg-[#008f6f]'}`}
+                >
+                    {isRecording ? (
+                        <Square className="text-white fill-white w-5 h-5" />
+                    ) : (
+                        <Mic className="text-white w-6 h-6" />
+                    )}
+                </button>
+            </div>
+        )}
       </div>
     );
   }
@@ -526,7 +627,7 @@ export default function App() {
            <div className="text-center mb-12 mt-8">
              <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-4" />
              <h2 className="text-3xl text-white">Sent Successfully</h2>
-             <button onClick={() => setView('record')} className="mt-6 text-green-500 underline">Send Another</button>
+             <button onClick={() => { setView('record'); setPreviewVideo({url:'', mimeType:''}); setAudioBlob(null); setTranscript(''); }} className="mt-6 text-green-500 underline">Send Another</button>
            </div>
          )}
          
