@@ -5,13 +5,45 @@ import { Mic, Square, Send, Download, Share2, Play, Pause, Copy, CheckCircle, Me
 const mockAuth = {
   currentUser: null,
   signIn: (email, password) => {
-    const username = email.split('@')[0];
-    mockAuth.currentUser = { email, username, uid: Date.now().toString() };
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+    const user = users[email];
+    
+    if (!user) {
+      throw new Error('User not found. Please sign up first.');
+    }
+    
+    if (user.password !== password) {
+      throw new Error('Invalid password.');
+    }
+    
+    mockAuth.currentUser = { email: user.email, username: user.username, uid: user.uid };
     localStorage.setItem('user', JSON.stringify(mockAuth.currentUser));
     return Promise.resolve(mockAuth.currentUser);
   },
   signUp: (email, password, username) => {
-    mockAuth.currentUser = { email, username, uid: Date.now().toString() };
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+    
+    if (users[email]) {
+      throw new Error('Email already exists. Please sign in.');
+    }
+    
+    // Check if username is taken
+    const usernameTaken = Object.values(users).some(u => u.username === username);
+    if (usernameTaken) {
+      throw new Error('Username already taken. Please choose another.');
+    }
+    
+    const newUser = {
+      email,
+      password,
+      username,
+      uid: Date.now().toString()
+    };
+    
+    users[email] = newUser;
+    localStorage.setItem('users', JSON.stringify(users));
+    
+    mockAuth.currentUser = { email: newUser.email, username: newUser.username, uid: newUser.uid };
     localStorage.setItem('user', JSON.stringify(mockAuth.currentUser));
     return Promise.resolve(mockAuth.currentUser);
   },
@@ -175,17 +207,51 @@ function App() {
   const [authUsername, setAuthUsername] = useState('');
 
   const handleAuth = async (isSignUp) => {
-    if (!authEmail || !authPassword || (isSignUp && !authUsername)) return;
+    if (!authEmail || !authPassword || (isSignUp && !authUsername)) {
+      alert('Please fill in all fields');
+      return;
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(authEmail)) {
+      alert('Please enter a valid email address');
+      return;
+    }
+
+    // Username validation for signup
+    if (isSignUp) {
+      if (authUsername.length < 3) {
+        alert('Username must be at least 3 characters');
+        return;
+      }
+      if (!/^[a-zA-Z0-9_]+$/.test(authUsername)) {
+        alert('Username can only contain letters, numbers, and underscores');
+        return;
+      }
+    }
+
+    // Password validation
+    if (authPassword.length < 6) {
+      alert('Password must be at least 6 characters');
+      return;
+    }
 
     try {
       const user = isSignUp 
         ? await mockAuth.signUp(authEmail, authPassword, authUsername)
         : await mockAuth.signIn(authEmail, authPassword);
+      
       setUser(user);
       setView('dashboard');
       loadMessages(user.username);
+      
+      // Clear form
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthUsername('');
     } catch (err) {
-      alert('Authentication failed. Please try again.');
+      alert(err.message || 'Authentication failed. Please try again.');
     }
   };
 
