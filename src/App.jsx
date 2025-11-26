@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Mic, Square, Send, Download, Share2, Play, Copy, CheckCircle, 
+  Mic, Square, Send, Download, Share2, Copy, CheckCircle, 
   MessageSquare, Users, TrendingUp, LogOut, Home, Inbox 
 } from 'lucide-react';
 
@@ -53,12 +53,10 @@ function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [targetUsername, setTargetUsername] = useState('');
 
-  // Auth
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
 
-  // Refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -105,7 +103,7 @@ function App() {
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
-      setIs  setIsRecording(false);
+      setIsRecording(false);  // FIXED: was "setIs setIsRecording"
       clearInterval(timerRef.current);
     }
   };
@@ -128,7 +126,6 @@ function App() {
     recorder.start();
 
     let finalTranscript = '';
-    let isActive = true;
 
     const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     recognition.lang = 'en-US';
@@ -139,29 +136,14 @@ function App() {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += t + ' ';
-        } else {
-          interim = t;
-        }
+        if (event.results[i].isFinal) finalTranscript += t + ' ';
+        else interim = t;
       }
       setTranscript(finalTranscript + interim);
     };
 
-    recognition.onerror = () => {
-      if (finalTranscript.trim() === '') {
-        finalTranscript = "You're amazing! Keep shining!";
-        setTranscript(finalTranscript);
-      }
-      isActive = false;
-    };
-
     recognition.onend = () => {
-      isActive = false;
-      if (!finalTranscript.trim()) {
-        finalTranscript = "You're amazing! Keep shining!";
-        setTranscript(finalTranscript);
-      }
+      if (!finalTranscript.trim()) finalTranscript = "You're amazing! Keep shining!";
       renderAnimation(finalTranscript.trim());
     };
 
@@ -171,16 +153,14 @@ function App() {
 
       const draw = () => {
         const elapsed = (Date.now() - startTime) / 1000;
-        const wordIndex = Math.min(Math.floor(elapsed * 2.5), words.length);
+        const index = Math.min(Math.floor(elapsed * 2.5), words.length);
 
-        // Background
         const grad = ctx.createLinearGradient(0, 0, 0, 1920);
         grad.addColorStop(0, '#667eea');
         grad.addColorStop(1, '#764ba2');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 1080, 1920);
 
-        // Robot
         ctx.shadowColor = 'rgba(0,0,0,0.5)';
         ctx.shadowBlur = 60;
         ctx.fillStyle = '#fff';
@@ -188,29 +168,26 @@ function App() {
         ctx.arc(540, 400, 180, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = '#333';
         const pulse = 50 + Math.sin(elapsed * 8) * 25;
+        ctx.fillStyle = '#333';
         ctx.beginPath();
         ctx.arc(470, 380, pulse, 0, Math.PI * 2);
         ctx.arc(610, 380, pulse, 0, Math.PI * 2);
         ctx.fill();
 
-        // Subtitles
         ctx.shadowBlur = 0;
         ctx.font = 'bold 80px Arial';
         ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
-        const displayed = words.slice(0, wordIndex).join(' ') + (wordIndex < words.length ? ' █' : '');
+        const displayed = words.slice(0, index).join(' ') + (index < words.length ? ' █' : '');
         const lines = displayed.match(/.{1,16}(\s|$)/g) || [];
-        lines.forEach((line, i) => {
-          ctx.fillText(line.trim(), 540, 1000 + i * 100);
-        });
+        lines.forEach((line, i) => ctx.fillText(line.trim(), 540, 1000 + i * 100));
 
         ctx.font = '42px Arial';
         ctx.fillStyle = 'rgba(255,255,255,0.7)';
         ctx.fillText('Sent anonymously via VoiceAnon', 540, 1700);
 
-        if (wordIndex < words.length || elapsed < words.length / 2.5 + 4) {
+        if (index < words.length || elapsed < words.length / 2.5 + 4) {
           requestAnimationFrame(draw);
         }
       };
@@ -220,10 +197,7 @@ function App() {
       utterance.voice = voices.find(v => v.name.includes('Google') || v.name.includes('Daniel')) || voices[0];
       utterance.rate = 0.9;
       utterance.pitch = 0.3;
-
-      utterance.onend = () => {
-        setTimeout(() => recorder.stop(), 2500);
-      };
+      utterance.onend = () => setTimeout(() => recorder.stop(), 2500);
 
       recorder.onstop = () => {
         const videoBlob = new Blob(videoChunks, { type: 'video/webm' });
@@ -241,7 +215,6 @@ function App() {
 
   const sendMessage = () => {
     if (!previewVideoUrl || !transcript) return;
-
     const message = {
       id: Date.now().toString(),
       text: transcript,
@@ -250,7 +223,6 @@ function App() {
       videoUrl: previewVideoUrl,
       audioUrl: URL.createObjectURL(audioBlob)
     };
-
     mockDB.saveMessage(targetUsername, message);
     setView('success');
   };
@@ -260,19 +232,6 @@ function App() {
     navigator.clipboard.writeText(`${window.location.origin}/u/${user.username}`);
     setLinkCopied(true);
     setTimeout(() => setLinkCopied(false), 2000);
-  };
-  const shareVideo = (url) => {
-    if (navigator.share && navigator.canShare?.({ files: [new File([], 'test')] })) {
-      fetch(url).then(r => r.blob()).then(blob => {
-        const file = new File([blob], 'voiceanon.mp4', { type: 'video/webm' });
-        navigator.share({ files: [file], title: 'Anonymous Message' });
-      });
-    } else {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'voiceanon.mp4';
-      a.click();
-    }
   };
 
   // ==================== VIEWS ====================
@@ -299,8 +258,25 @@ function App() {
               Anonymous Voice Messages, Reimagined
             </h1>
             <p className="text-2xl mb-12 text-gray-300">
-              Record → Preview → Send stunning animated videos with robotic voice
+              Record → Preview → Send stunning animated videos with robotic voice & subtitles
             </p>
+            <div className="grid md:grid-cols-3 gap-8 mb-16">
+              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
+                <Mic className="w-12 h-12 mb-4 mx-auto text-pink-300" />
+                <h3 className="text-xl font-bold mb-3">Speak Freely</h3>
+                <p className="text-gray-300">Your real voice, full emotion</p>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
+                <Users className="w-12 h-12 mb-4 mx-auto text-purple-300" />
+                <h3 className="text-xl font-bold mb-3">100% Anonymous</h3>
+                <p className="text-gray-300">Turned into robotic AI video</p>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
+                <Share2 className="w-12 h-12 mb-4 mx-auto text-indigo-300" />
+                <h3 className="text-xl font-bold mb-3">Go Viral</h3>
+                <p className="text-gray-300">Share instantly to TikTok & WhatsApp</p>
+              </div>
+            </div>
             <button onClick={() => setView('signup')} className="px-12 py-4 text-xl rounded-full bg-gradient-to-r from-pink-500 to-purple-600 font-bold hover:shadow-2xl hover:scale-105 transition">
               Create Your Link Free
             </button>
@@ -310,23 +286,37 @@ function App() {
     );
   }
 
-  // Sign In / Sign Up (unchanged, working)
-  if (view === 'signin' || view === 'signup') {
-    const isSignUp = view === 'signup';
+  if (view === 'signin') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
-          <h2 className="text-3xl font-bold text-white mb-6 text-center">{isSignUp ? 'Create Account' : 'Welcome Back'}</h2>
-          <form onSubmit={e => { e.preventDefault(); 
-            (isSignUp ? mockAuth.signUp(authEmail, authPassword, authUsername) : mockAuth.signIn(authEmail, authPassword))
-              .then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); })
-              .catch(e => alert(e.message));
-          }} className="space-y-4">
-            {isSignUp && <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />}
+          <h2 className="text-3xl font-bold text-white mb-6 text-center">Welcome Back</h2>
+          <form onSubmit={e => { e.preventDefault(); mockAuth.signIn(authEmail, authPassword).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
             <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
-              {isSignUp ? 'Create Account' : 'Sign In'}
+              Sign In
+            </button>
+          </form>
+          <p className="text-center text-white/60 mt-4">
+            No account? <button onClick={() => setView('signup')} className="text-pink-300 hover:underline">Sign Up</button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'signup') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
+        <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
+          <h2 className="text-3xl font-bold text-white mb-6 text-center">Create Account</h2>
+          <form onSubmit={e => { e.preventDefault(); mockAuth.signUp(authEmail, authPassword, authUsername).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
+            <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
+              Create Account
             </button>
           </form>
         </div>
@@ -343,29 +333,31 @@ function App() {
               <Mic className="w-8 h-8" /> VoiceAnon
             </div>
             <div className="flex gap-4">
-              <button onClick={() => setView('dashboard')} className="px-4 py-2 rounded-lg bg-white/20 text-white flex items-center gap-2">
+              <button onClick={() => setView('dashboard')} className="px-4 py-2 rounded-lg bg-white/20 text-white hover:bg-white/30 transition flex items-center gap-2">
                 <Home className="w-5 h-5" /> Dashboard
               </button>
-              <button onClick={() => setView('inbox')} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 flex items-center gap-2">
+              <button onClick={() => setView('inbox')} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
                 <Inbox className="w-5 h-5" /> Inbox ({messages.length})
               </button>
-              <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 flex items-center gap-2">
+              <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="px-4 py-2 rounded-lg text-white hover:bg-white/10 transition flex items-center gap-2">
                 <LogOut className="w-5 h-5" />
               </button>
             </div>
           </div>
         </nav>
-        <div className="container mx-auto px-4 py-12 text-center">
-          <h1 className="text-4xl font-bold text-white mb-8">Your Link</h1>
-          <div className="max-w-2xl mx-auto bg-white/10 backdrop-blur-lg rounded-2xl p-8">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="flex-1 bg-white/20 rounded-xl px-4 py-3 text-white font-mono break-all">
-                {window.location.origin}/u/{user?.username}
+        <div className="container mx-auto px-4 py-12">
+          <div className="max-w-2xl mx-auto text-center">
+            <h1 className="text-4xl font-bold text-white mb-8">Your Personal Link</h1>
+            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8">
+              <div className="flex items-center gap-4 mb-6">
+                <div className="flex-1 bg-white/20 rounded-xl px-4 py-3 text-white font-mono break-all">
+                  {window.location.origin}/u/{user?.username}
+                </div>
+                <button onClick={copyLink} className="px-6 py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold hover:shadow-xl transition flex items-center gap-2">
+                  {linkCopied ? <CheckCircle className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
+                  {linkCopied ? 'Copied!' : 'Copy'}
+                </button>
               </div>
-              <button onClick={copyLink} className="px-6 py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold flex items-center gap-2">
-                {linkCopied ? <CheckCircle className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
-                {linkCopied ? 'Copied!' : 'Copy'}
-              </button>
             </div>
           </div>
         </div>
@@ -389,8 +381,20 @@ function App() {
                 <video controls src={m.videoUrl} className="w-full rounded-2xl shadow-2xl" />
                 <p className="text-xl text-white/90 mt-6 italic text-center">"{m.text}"</p>
                 <div className="flex gap-4 mt-6">
-                  <button onClick={() => shareVideo(m.videoUrl)} className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 py-4 rounded-xl font-bold text-white flex items-center justify-center gap-3">
-                    <Share2 className="w-6 h-6" /> Share to TikTok / WhatsApp
+                  <button onClick={() => {
+                    if (navigator.share) {
+                      fetch(m.videoUrl).then(r => r.blob()).then(blob => {
+                        const file = new File([blob], 'voiceanon.mp4', { type: 'video/webm' });
+                        navigator.share({ files: [file], title: 'Anonymous Message' });
+                      });
+                    } else {
+                      const a = document.createElement('a');
+                      a.href = m.videoUrl;
+                      a.download = 'voiceanon.mp4';
+                      a.click();
+                    }
+                  }} className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 py-4 rounded-xl font-bold text-white flex items-center justify-center gap-3">
+                    <Share2 className="w-6 h-6" /> Share
                   </button>
                   <a href={m.videoUrl} download={`voiceanon_${m.id}.webm`} className="flex-1 bg-white/20 py-4 rounded-xl font-bold text-white text-center">
                     <Download className="w-6 h-6 inline mr-2" /> Download
@@ -451,7 +455,7 @@ function App() {
                   <div className="w-4 h-4 bg-purple-500 rounded-full animate-bounce delay-100"></div>
                   <div className="w-4 h-4 bg-indigo-500 rounded-full animate-bounce delay-200"></div>
                 </div>
-                <p className="text-xl text-white">Transcribing & generating your video...</p>
+                <p className="text-xl text-white">Generating your video...</p>
               </div>
             ) : (
               <button onClick={generatePreview} className="w-full py-5 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 text-white font-bold text-xl">
