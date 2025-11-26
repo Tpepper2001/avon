@@ -528,13 +528,11 @@ function App() {
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
           <h2 className="text-3xl font-bold text-white mb-6 text-center">Welcome Back</h2>
           <form onSubmit={e => { e.preventDefault(); mockAuth.signIn(authEmail, authPassword).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
-            {/* FIX: ensure onChange is single-line */}
             <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
             <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
               Sign In
             </button>
-      
           </form>
           <p className="text-center text-white/60 mt-4">
             No account?
@@ -545,61 +543,18 @@ function App() {
     );
   }
 
-if (view === 'signup') {
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
-      <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
-        <h2 className="text-3xl font-bold text-white mb-6 text-center">Create Account</h2>
-        <form
-          onSubmit={e => {
-            e.preventDefault();
-            mockAuth
-              .signUp(authEmail, authPassword, authUsername)
-              .then(u => {
-                setUser(u);
-                setView('dashboard');
-                setMessages(mockDB.getMessages(u.username));
-              })
-              .catch(e => alert(e.message));
-          }}
-          className="space-y-4"
-        >
-          <input
-            type="text"
-            placeholder="Username"
-            value={authUsername}
-            onChange={e => setAuthUsername(e.target.value)}
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60"
-          />
-          <input
-            type="email"
-            placeholder="Email"
-            value={authEmail}
-            onChange={e => setAuthEmail(e.target.value)}
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={authPassword}
-            onChange={e => setAuthPassword(e.target.value)}
-            required
-            className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60"
-          />
-          <button
-            type="submit"
-            className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition"
-          >
-            Sign Up
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
+  if (view === 'signup') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-indigo-900 to-blue-900 flex items-center justify-center px-4">
+        <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full">
+          <h2 className="text-3xl font-bold text-white mb-6 text-center">Create Account</h2>
+          <form onSubmit={e => { e.preventDefault(); mockAuth.signUp(authEmail, authPassword, authUsername).then(u => { setUser(u); setView('dashboard'); setMessages(mockDB.getMessages(u.username)); }).catch(e => alert(e.message)); }} className="space-y-4">
+            {/* The problematic line is here. It is now definitively single-line to prevent ESBuild errors. */}
+            <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required className="w-full px-4 py-3 rounded-xl bg-white/20 text-white placeholder-white/60 border border-white/30 focus:outline-none focus:border-white/60" />
+            <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-500 to-purple-600 font-bold text-white hover:shadow-xl transition">
+ 
               Create Account
             </button>
           </form>
