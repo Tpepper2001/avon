@@ -217,8 +217,9 @@ export default function App() {
   // ----------------- Generate MP4/Video (FIXED AUDIO) -----------------
  // ----------------- Generate MP4/Video (CORS FIXED) -----------------
  // ----------------- Generate MP4/Video (ENHANCED & FIXED) -----------------
+  // ----------------- Generate MP4/Video (VOICE MORPHING - NO EXTERNAL APIS) -----------------
   const generatePreview = async () => {
-    if (!transcript && !audioBlob) {
+    if (!audioBlob) {
       alert('No audio recorded.');
       return;
     }
@@ -230,7 +231,7 @@ export default function App() {
     canvas.height = 1920;
     const ctx = canvas.getContext('2d', { alpha: false });
 
-    const textToSpeak = transcript || "Audio message received.";
+    const textToSpeak = transcript || "Audio message";
     
     // Cleanup previous resources
     if (audioContextRef.current) {
@@ -241,95 +242,82 @@ export default function App() {
       URL.revokeObjectURL(ttsObjectUrlRef.current);
       ttsObjectUrlRef.current = null;
     }
-    if (audioElementRef.current) {
-      audioElementRef.current.pause();
-      audioElementRef.current = null;
-    }
 
-    let audioEl, audioCtx, recorder;
+    let audioCtx, recorder, analyser;
 
     try {
-      // 1. Fetch TTS Audio with multiple fallback proxies
-      const proxies = [
-        `https://corsproxy.io/?`,
-        `https://api.allorigins.win/raw?url=`,
-        `https://cors-anywhere.herokuapp.com/`
-      ];
-      
-      const targetUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
-      
-      let audioBlob = null;
-      let lastError = null;
-
-      for (const proxy of proxies) {
-        try {
-          const ttsUrl = proxy + encodeURIComponent(targetUrl);
-          const resp = await fetch(ttsUrl, { 
-            method: 'GET',
-            mode: 'cors',
-            cache: 'no-cache'
-          });
-          
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          audioBlob = await resp.blob();
-          
-          if (audioBlob.size > 100) break; // Valid audio file
-        } catch (e) {
-          lastError = e;
-          console.warn(`Proxy ${proxy} failed:`, e);
-          continue;
-        }
-      }
-
-      if (!audioBlob) {
-        throw new Error('All proxies failed. ' + (lastError?.message || ''));
-      }
-
-      // 2. Setup Web Audio API
+      // 1. Setup Web Audio API with Voice Morphing
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContext({ sampleRate: 44100 });
       audioContextRef.current = audioCtx;
-      
       await audioCtx.resume();
+
+      // 2. Decode the user's recorded audio
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
       
+      // 3. Create audio processing chain for ROBOTIC VOICE EFFECT
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      
+      // Pitch shift DOWN for deeper robotic voice
+      source.playbackRate.value = 0.75; // Lower = deeper voice
+      
+      // Add distortion for robotic effect
+      const distortion = audioCtx.createWaveShaper();
+      distortion.curve = makeDistortionCurve(50); // Light distortion
+      
+      // Bitcrusher effect (reduce quality for robotic sound)
+      const bitcrusher = audioCtx.createScriptProcessor(4096, 1, 1);
+      let phase = 0;
+      const crushFactor = 8; // Higher = more crushed/robotic
+      bitcrusher.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          phase++;
+          if (phase % crushFactor === 0) {
+            output[i] = Math.round(input[i] * 10) / 10; // Quantize
+          } else {
+            output[i] = output[i - 1] || 0; // Hold value
+          }
+        }
+      };
+      
+      // Bandpass filter for phone/radio quality
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 1500; // Focus on mid frequencies
+      filter.Q.value = 1.5;
+      
+      // Reverb for robot chamber effect
+      const convolver = audioCtx.createConvolver();
+      convolver.buffer = createReverbBuffer(audioCtx, 0.8, 0.3);
+      
+      // Gain control
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.2; // Boost volume slightly
+      
+      // Analyser for visualizing audio
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      
+      // Connect the chain
       const dest = audioCtx.createMediaStreamDestination();
       
-      // 3. Load audio element
-      audioEl = new Audio();
-      audioEl.crossOrigin = "anonymous";
-      audioElementRef.current = audioEl;
+      source.connect(distortion);
+      distortion.connect(bitcrusher);
+      bitcrusher.connect(filter);
+      filter.connect(convolver);
+      convolver.connect(gainNode);
+      gainNode.connect(analyser);
+      analyser.connect(dest);
+      analyser.connect(audioCtx.destination); // Also play to speakers
       
-      const objUrl = URL.createObjectURL(audioBlob);
-      ttsObjectUrlRef.current = objUrl;
-      audioEl.src = objUrl;
+      // 4. Start playback
+      source.start(0);
       
-      // Wait for metadata to load
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Audio load timeout')), 10000);
-        audioEl.onloadedmetadata = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
-        audioEl.onerror = () => {
-          clearTimeout(timeout);
-          reject(new Error('Audio load error'));
-        };
-        audioEl.load();
-      });
-
-      // 4. Connect Web Audio routing
-      const source = audioCtx.createMediaElementSource(audioEl);
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = 1.0;
-      
-      source.connect(gainNode);
-      gainNode.connect(dest);
-      gainNode.connect(audioCtx.destination);
-
-      // 5. Start playback
-      await audioEl.play();
-
-      // 6. Setup video recording
+      // 5. Setup video recording
       const canvasStream = canvas.captureStream(30);
       const combined = new MediaStream([
         ...canvasStream.getVideoTracks(),
@@ -365,25 +353,28 @@ export default function App() {
         setProcessing(false);
         
         // Cleanup
-        if (audioEl) audioEl.pause();
         if (audioCtx) audioCtx.close();
       };
 
-      recorder.start(100); // Collect data every 100ms
+      recorder.start(100);
 
-      // 7. Animation loop with better sync
+      // 6. Animation loop with audio reactivity
       const words = textToSpeak.split(/\s+/).filter(w => w.length > 0);
       const startTime = performance.now();
-      const audioDuration = audioEl.duration && isFinite(audioEl.duration) 
-        ? audioEl.duration * 1000 
-        : (words.length * 500) + 2000;
-
+      const audioDuration = audioBuffer.duration * 1000;
+      
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
       let animationFrame;
       
       const drawFrame = (timestamp) => {
         const elapsed = timestamp - startTime;
         const progress = Math.min(elapsed / audioDuration, 1);
         const wordIndex = Math.min(Math.floor(progress * words.length), words.length);
+
+        // Get audio data for reactive visuals
+        analyser.getByteFrequencyData(dataArray);
+        const avgVolume = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        const volumeScale = avgVolume / 128;
 
         // Background gradient
         const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -404,19 +395,19 @@ export default function App() {
           ctx.stroke();
         }
         
-        // Robot head
-        ctx.shadowColor = 'rgba(0, 255, 127, 0.6)';
-        ctx.shadowBlur = 60;
+        // Robot head with audio-reactive glow
+        ctx.shadowColor = `rgba(0, 255, 127, ${0.4 + volumeScale * 0.4})`;
+        ctx.shadowBlur = 60 + volumeScale * 40;
         ctx.fillStyle = '#0a0a0a';
         ctx.beginPath();
         ctx.arc(canvas.width / 2, 600, 220, 0, Math.PI * 2);
         ctx.fill();
         
         // Animated eyes with audio reactivity
-        const pulse = 55 + Math.sin(elapsed / 50) * 20;
+        const pulse = 55 + Math.sin(elapsed / 50) * 20 + volumeScale * 15;
         const blink = Math.abs(Math.sin(elapsed / 300)) > 0.95 ? 0.3 : 1;
         
-        ctx.shadowBlur = 30;
+        ctx.shadowBlur = 30 + volumeScale * 20;
         ctx.fillStyle = '#00ff7f';
         ctx.globalAlpha = blink;
         
@@ -430,14 +421,26 @@ export default function App() {
         
         ctx.globalAlpha = 1;
         
-        // Mouth visualization
+        // Audio-reactive mouth
         ctx.strokeStyle = '#00ff7f';
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 6 + volumeScale * 4;
         ctx.shadowBlur = 20;
         ctx.beginPath();
-        const mouthWave = Math.sin(elapsed / 30) * 30;
-        ctx.arc(canvas.width / 2, 680, 60, 0.2, Math.PI - 0.2);
-        ctx.quadraticCurveTo(canvas.width / 2, 680 + mouthWave, canvas.width / 2 + 60, 680);
+        const mouthOpen = 30 + volumeScale * 40;
+        ctx.arc(canvas.width / 2, 680, 60 + volumeScale * 20, 0.2, Math.PI - 0.2);
+        ctx.quadraticCurveTo(canvas.width / 2, 680 + mouthOpen, canvas.width / 2 + 60, 680);
+        ctx.stroke();
+        
+        // Audio waveform visualization
+        ctx.beginPath();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0, 255, 127, 0.5)';
+        for (let i = 0; i < dataArray.length; i++) {
+          const x = (i / dataArray.length) * canvas.width;
+          const y = 850 + (dataArray[i] / 255) * 100 - 50;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
         ctx.stroke();
         
         // Text display
@@ -451,7 +454,6 @@ export default function App() {
         
         lines.forEach((line, i) => {
           const y = 1100 + i * 90;
-          // Text shadow for better readability
           ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
           ctx.fillText(line, canvas.width / 2 + 3, y + 3);
           ctx.fillStyle = '#00ff7f';
@@ -461,7 +463,7 @@ export default function App() {
         // Footer with progress
         ctx.font = '40px Courier New, monospace';
         ctx.fillStyle = 'rgba(0, 255, 127, 0.6)';
-        ctx.fillText('◆ ENCRYPTED MESSAGE ◆', canvas.width / 2, 1700);
+        ctx.fillText('◆ VOICE ENCRYPTED ◆', canvas.width / 2, 1700);
         
         // Progress bar
         ctx.fillStyle = 'rgba(0, 255, 127, 0.3)';
@@ -469,14 +471,13 @@ export default function App() {
         ctx.fillStyle = '#00ff7f';
         ctx.fillRect(100, 1750, (canvas.width - 200) * progress, 8);
 
-        // Continue animation
         if (elapsed < audioDuration + 500) {
           animationFrame = requestAnimationFrame(drawFrame);
         } else {
           setTimeout(() => {
             try {
               if (recorder && recorder.state !== 'inactive') recorder.stop();
-            } catch(e) { console.error('Stop error:', e); }
+            } catch(e) {}
           }, 300);
         }
       };
@@ -486,16 +487,40 @@ export default function App() {
     } catch (error) {
       console.error('Video generation error:', error);
       setProcessing(false);
-      alert(`Failed to generate video: ${error.message}\n\nPlease try again or record a shorter message.`);
+      alert(`Failed to generate video: ${error.message}\n\nPlease try recording again.`);
       
-      // Cleanup on error
       if (recorder && recorder.state !== 'inactive') {
         try { recorder.stop(); } catch(e) {}
       }
-      if (audioEl) audioEl.pause();
       if (audioCtx) audioCtx.close();
     }
   };
+
+  // Helper function for distortion curve
+  function makeDistortionCurve(amount) {
+    const samples = 44100;
+    const curve = new Float32Array(samples);
+    const deg = Math.PI / 180;
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+    }
+    return curve;
+  }
+
+  // Helper function to create reverb
+  function createReverbBuffer(ctx, duration, decay) {
+    const rate = ctx.sampleRate;
+    const length = rate * duration;
+    const buffer = ctx.createBuffer(2, length, rate);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < length; i++) {
+      left[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+      right[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+    }
+    return buffer;
+  }
 
   // ----------------- STRICT FILE SHARING -----------------
   const shareVideoFile = async (videoUrl, type) => {
