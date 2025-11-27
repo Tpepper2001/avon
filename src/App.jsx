@@ -216,6 +216,7 @@ export default function App() {
 
   // ----------------- Generate MP4/Video (FIXED AUDIO) -----------------
  // ----------------- Generate MP4/Video (CORS FIXED) -----------------
+ // ----------------- Generate MP4/Video (ENHANCED & FIXED) -----------------
   const generatePreview = async () => {
     if (!transcript && !audioBlob) {
       alert('No audio recorded.');
@@ -227,152 +228,273 @@ export default function App() {
     const canvas = canvasRef.current;
     canvas.width = 1080;
     canvas.height = 1920;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
 
-    // 1. Fetch Robotic TTS Audio VIA PROXY (Fixes CORS Error)
     const textToSpeak = transcript || "Audio message received.";
     
-    // Original URL
-    const targetUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
-    // Proxied URL (Bypasses security block)
-    const ttsUrl = `https://corsproxy.io/?` + encodeURIComponent(targetUrl);
-    
-    // Cleanup previous context/audio
-    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null; }
-    if (ttsObjectUrlRef.current) { URL.revokeObjectURL(ttsObjectUrlRef.current); }
-    
-    // Create new Audio Context and Source
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AudioContext();
-    audioContextRef.current = audioCtx;
-    
-    // IMPORTANT: Resume context to bypass autoplay blocks
-    await audioCtx.resume();
+    // Cleanup previous resources
+    if (audioContextRef.current) {
+      try { audioContextRef.current.close(); } catch(e) {}
+      audioContextRef.current = null;
+    }
+    if (ttsObjectUrlRef.current) {
+      URL.revokeObjectURL(ttsObjectUrlRef.current);
+      ttsObjectUrlRef.current = null;
+    }
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current = null;
+    }
 
-    const dest = audioCtx.createMediaStreamDestination();
-    
-    // Create a fresh audio element
-    const audioEl = new Audio();
-    audioEl.crossOrigin = "anonymous"; // Required for processing
-    audioElementRef.current = audioEl;
+    let audioEl, audioCtx, recorder;
 
     try {
-      // Fetch Blob explicitly through the Proxy
-      const resp = await fetch(ttsUrl);
-      if (!resp.ok) throw new Error("Proxy fetch failed");
+      // 1. Fetch TTS Audio with multiple fallback proxies
+      const proxies = [
+        `https://corsproxy.io/?`,
+        `https://api.allorigins.win/raw?url=`,
+        `https://cors-anywhere.herokuapp.com/`
+      ];
       
-      const blob = await resp.blob();
-      const objUrl = URL.createObjectURL(blob);
+      const targetUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(textToSpeak)}`;
+      
+      let audioBlob = null;
+      let lastError = null;
+
+      for (const proxy of proxies) {
+        try {
+          const ttsUrl = proxy + encodeURIComponent(targetUrl);
+          const resp = await fetch(ttsUrl, { 
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-cache'
+          });
+          
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          audioBlob = await resp.blob();
+          
+          if (audioBlob.size > 100) break; // Valid audio file
+        } catch (e) {
+          lastError = e;
+          console.warn(`Proxy ${proxy} failed:`, e);
+          continue;
+        }
+      }
+
+      if (!audioBlob) {
+        throw new Error('All proxies failed. ' + (lastError?.message || ''));
+      }
+
+      // 2. Setup Web Audio API
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContext({ sampleRate: 44100 });
+      audioContextRef.current = audioCtx;
+      
+      await audioCtx.resume();
+      
+      const dest = audioCtx.createMediaStreamDestination();
+      
+      // 3. Load audio element
+      audioEl = new Audio();
+      audioEl.crossOrigin = "anonymous";
+      audioElementRef.current = audioEl;
+      
+      const objUrl = URL.createObjectURL(audioBlob);
       ttsObjectUrlRef.current = objUrl;
       audioEl.src = objUrl;
-
-      // Wait for load
+      
+      // Wait for metadata to load
       await new Promise((resolve, reject) => {
-        audioEl.onloadeddata = resolve;
-        audioEl.onerror = (e) => reject(new Error("Audio load error"));
+        const timeout = setTimeout(() => reject(new Error('Audio load timeout')), 10000);
+        audioEl.onloadedmetadata = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+        audioEl.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error('Audio load error'));
+        };
+        audioEl.load();
       });
 
-      // Hook up Web Audio API
+      // 4. Connect Web Audio routing
       const source = audioCtx.createMediaElementSource(audioEl);
-      source.connect(dest); // To Recorder
-      source.connect(audioCtx.destination); // To Speakers
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.0;
       
+      source.connect(gainNode);
+      gainNode.connect(dest);
+      gainNode.connect(audioCtx.destination);
+
+      // 5. Start playback
       await audioEl.play();
-    } catch (e) {
-      console.error("Audio generation failed:", e);
-      alert("Could not generate audio. The text-to-speech server might be busy. Please try again.");
+
+      // 6. Setup video recording
+      const canvasStream = canvas.captureStream(30);
+      const combined = new MediaStream([
+        ...canvasStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+      ]);
+
+      const mimeType = getSupportedMimeType();
+      const recorderOptions = {
+        mimeType,
+        videoBitsPerSecond: 2500000,
+        audioBitsPerSecond: 128000
+      };
+
+      try {
+        recorder = new MediaRecorder(combined, recorderOptions);
+      } catch(e) {
+        recorder = new MediaRecorder(combined, { mimeType });
+      }
+
+      const videoChunks = [];
+      
+      recorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) videoChunks.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(videoChunks, { type: recorder.mimeType || mimeType });
+        if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+        
+        const url = URL.createObjectURL(blob);
+        videoUrlRef.current = url;
+        setPreviewVideo({ url, mimeType: recorder.mimeType || mimeType });
+        setProcessing(false);
+        
+        // Cleanup
+        if (audioEl) audioEl.pause();
+        if (audioCtx) audioCtx.close();
+      };
+
+      recorder.start(100); // Collect data every 100ms
+
+      // 7. Animation loop with better sync
+      const words = textToSpeak.split(/\s+/).filter(w => w.length > 0);
+      const startTime = performance.now();
+      const audioDuration = audioEl.duration && isFinite(audioEl.duration) 
+        ? audioEl.duration * 1000 
+        : (words.length * 500) + 2000;
+
+      let animationFrame;
+      
+      const drawFrame = (timestamp) => {
+        const elapsed = timestamp - startTime;
+        const progress = Math.min(elapsed / audioDuration, 1);
+        const wordIndex = Math.min(Math.floor(progress * words.length), words.length);
+
+        // Background gradient
+        const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        grad.addColorStop(0, '#000000');
+        grad.addColorStop(0.5, '#0a1f1f');
+        grad.addColorStop(1, '#0f2027');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Animated grid background
+        ctx.strokeStyle = 'rgba(0, 255, 127, 0.1)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 20; i++) {
+          const offset = (elapsed / 50) % 100;
+          ctx.beginPath();
+          ctx.moveTo(0, i * 100 + offset);
+          ctx.lineTo(canvas.width, i * 100 + offset);
+          ctx.stroke();
+        }
+        
+        // Robot head
+        ctx.shadowColor = 'rgba(0, 255, 127, 0.6)';
+        ctx.shadowBlur = 60;
+        ctx.fillStyle = '#0a0a0a';
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2, 600, 220, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Animated eyes with audio reactivity
+        const pulse = 55 + Math.sin(elapsed / 50) * 20;
+        const blink = Math.abs(Math.sin(elapsed / 300)) > 0.95 ? 0.3 : 1;
+        
+        ctx.shadowBlur = 30;
+        ctx.fillStyle = '#00ff7f';
+        ctx.globalAlpha = blink;
+        
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2 - 80, 580, pulse, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2 + 80, 580, pulse, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.globalAlpha = 1;
+        
+        // Mouth visualization
+        ctx.strokeStyle = '#00ff7f';
+        ctx.lineWidth = 6;
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        const mouthWave = Math.sin(elapsed / 30) * 30;
+        ctx.arc(canvas.width / 2, 680, 60, 0.2, Math.PI - 0.2);
+        ctx.quadraticCurveTo(canvas.width / 2, 680 + mouthWave, canvas.width / 2 + 60, 680);
+        ctx.stroke();
+        
+        // Text display
+        ctx.shadowBlur = 0;
+        ctx.font = 'bold 70px Courier New, monospace';
+        ctx.fillStyle = '#00ff7f';
+        ctx.textAlign = 'center';
+        
+        const displayText = words.slice(0, wordIndex).join(' ') + (wordIndex < words.length ? '▌' : '');
+        const lines = wrapTextByWords(displayText, 14);
+        
+        lines.forEach((line, i) => {
+          const y = 1100 + i * 90;
+          // Text shadow for better readability
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+          ctx.fillText(line, canvas.width / 2 + 3, y + 3);
+          ctx.fillStyle = '#00ff7f';
+          ctx.fillText(line, canvas.width / 2, y);
+        });
+
+        // Footer with progress
+        ctx.font = '40px Courier New, monospace';
+        ctx.fillStyle = 'rgba(0, 255, 127, 0.6)';
+        ctx.fillText('◆ ENCRYPTED MESSAGE ◆', canvas.width / 2, 1700);
+        
+        // Progress bar
+        ctx.fillStyle = 'rgba(0, 255, 127, 0.3)';
+        ctx.fillRect(100, 1750, canvas.width - 200, 8);
+        ctx.fillStyle = '#00ff7f';
+        ctx.fillRect(100, 1750, (canvas.width - 200) * progress, 8);
+
+        // Continue animation
+        if (elapsed < audioDuration + 500) {
+          animationFrame = requestAnimationFrame(drawFrame);
+        } else {
+          setTimeout(() => {
+            try {
+              if (recorder && recorder.state !== 'inactive') recorder.stop();
+            } catch(e) { console.error('Stop error:', e); }
+          }, 300);
+        }
+      };
+
+      animationFrame = requestAnimationFrame(drawFrame);
+
+    } catch (error) {
+      console.error('Video generation error:', error);
       setProcessing(false);
-      return;
+      alert(`Failed to generate video: ${error.message}\n\nPlease try again or record a shorter message.`);
+      
+      // Cleanup on error
+      if (recorder && recorder.state !== 'inactive') {
+        try { recorder.stop(); } catch(e) {}
+      }
+      if (audioEl) audioEl.pause();
+      if (audioCtx) audioCtx.close();
     }
-
-    // 2. Combine Tracks (Canvas Video + Web Audio)
-    const canvasStream = canvas.captureStream(30);
-    const combined = new MediaStream([
-      ...canvasStream.getVideoTracks(),
-      ...dest.stream.getAudioTracks() 
-    ]);
-
-    // 3. Recorder Setup
-    const mimeType = getSupportedMimeType();
-    let recorder;
-    try {
-      // Increase bitsPerSecond for better video quality
-      recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 2500000 });
-    } catch(e) {
-      recorder = new MediaRecorder(combined);
-    }
-
-    const videoChunks = [];
-    recorder.ondataavailable = e => { if (e.data.size) videoChunks.push(e.data); };
-    recorder.onstop = () => {
-      const blob = new Blob(videoChunks, { type: recorder.mimeType || mimeType });
-      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
-      const url = URL.createObjectURL(blob);
-      videoUrlRef.current = url;
-      setPreviewVideo({ url, mimeType: recorder.mimeType || mimeType });
-      setProcessing(false);
-      
-      // Cleanup
-      audioEl.pause();
-      audioCtx.close(); 
-    };
-
-    recorder.start();
-
-    // 4. Animation Loop
-    const words = textToSpeak.split(/\s+/);
-    const startTime = Date.now();
-    const duration = (audioEl.duration && isFinite(audioEl.duration)) 
-      ? audioEl.duration + 0.5 
-      : (words.length * 0.5) + 2;
-
-    const drawFrame = () => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      const index = Math.min(Math.floor(elapsed * 2.5), words.length);
-
-      // Dark Tech BG
-      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      grad.addColorStop(0, '#000000');
-      grad.addColorStop(1, '#0f2027');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      // Robot Visual
-      ctx.shadowColor = 'rgba(0, 255, 127, 0.4)';
-      ctx.shadowBlur = 50;
-      ctx.fillStyle = '#111';
-      ctx.beginPath();
-      ctx.arc(canvas.width / 2, 600, 200, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Eyes
-      const pulse = 60 + Math.sin(elapsed * 12) * 15;
-      ctx.shadowBlur = 25;
-      ctx.fillStyle = '#00ff7f';
-      ctx.beginPath();
-      ctx.arc(canvas.width / 2 - 80, 580, pulse, 0, Math.PI * 2);
-      ctx.arc(canvas.width / 2 + 80, 580, pulse, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Subtitles
-      ctx.shadowBlur = 0;
-      ctx.font = 'bold 70px Courier New';
-      ctx.fillStyle = '#00ff7f';
-      ctx.textAlign = 'center';
-      
-      const displayed = words.slice(0, index).join(' ') + (index < words.length ? '_' : '');
-      const lines = wrapTextByWords(displayed, 14);
-      lines.forEach((line, i) => ctx.fillText(line, canvas.width / 2, 1100 + i * 90));
-
-      // Footer
-      ctx.font = '40px Courier New';
-      ctx.fillStyle = 'rgba(0, 255, 127, 0.5)';
-      ctx.fillText('ENCRYPTED MESSAGE', canvas.width / 2, 1700);
-
-      if (elapsed < duration) requestAnimationFrame(drawFrame);
-      else setTimeout(() => { try{ recorder.stop(); }catch(e){} }, 200);
-    };
-    requestAnimationFrame(drawFrame);
   };
 
   // ----------------- STRICT FILE SHARING -----------------
