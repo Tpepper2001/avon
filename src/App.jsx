@@ -1,4 +1,4 @@
-// src/App.jsx — VoiceAnon v3.1 — FINAL VERSION (Inbox Fixed!)
+// src/App.jsx — VoiceAnon v3.2 — FINAL FIXED VERSION (Inbox Works!)
 import React, {
   useEffect,
   useRef,
@@ -152,8 +152,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('landing');
   const [targetUsername, setTargetUsername] = useState('');
-  const [messages, setMessages] = useState([]);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const [messages, setMessages] = useState([]); // Live inbox messages
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -167,6 +166,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
   const [authError, setAuthError] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -199,6 +199,7 @@ export default function App() {
     };
   }, []);
 
+  // Initial load + routing
   useLayoutEffect(() => {
     mockAuth.init();
     if (mockAuth.currentUser) {
@@ -216,6 +217,13 @@ export default function App() {
       }
     }
   }, []);
+
+  // Keep inbox updated when view changes
+  useEffect(() => {
+    if (view === 'inbox' && user) {
+      setMessages(msgDB.get(user.username));
+    }
+  }, [view, user]);
 
   // ==================== Recording ====================
   const startRecording = async () => {
@@ -391,7 +399,7 @@ export default function App() {
     }
   };
 
-  // ==================== Send Message ====================
+  // ==================== SEND MESSAGE — NOW UPDATES INBOX ====================
   const sendMessage = async () => {
     if (!previewVideo) return;
     setProcessing(true);
@@ -409,6 +417,7 @@ export default function App() {
       const recipient = targetUsername || user.username;
       await msgDB.save(recipient, msg);
 
+      // CRITICAL FIX: Update inbox if sending to self
       if (user?.username === recipient) {
         setMessages(msgDB.get(user.username));
       }
@@ -428,21 +437,7 @@ export default function App() {
     setTimeout(() => setLinkCopied(false), 2000);
   };
 
-  const shareVideo = async (blob) => {
-    const file = new File([blob], 'voiceanon_robot_message.webm', { type: blob.type });
-    if (navigator.canShare?.({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: 'Anonymous Robot Message' });
-        return;
-      } catch (e) {}
-    }
-    const a = document.createElement('a');
-    a.href = createObjectURL(blob);
-    a.download = 'voiceanon_robot_message.webm';
-    a.click();
-  };
-
-  // ==================== Render ====================
+  // ==================== Render Views ====================
   if (view === 'landing') {
     return (
       <div className="min-h-screen bg-black text-green-400 font-mono flex flex-col items-center justify-center p-6">
@@ -514,7 +509,7 @@ export default function App() {
           </button>
         </div>
 
-        <button onClick={() => { setMessages(msgDB.get(user.username)); setView('inbox'); }} className="w-full py-5 bg-gray-800 rounded-xl flex items-center justify-center gap-3 text-xl mb-4">
+        <button onClick={() => setView('inbox')} className="w-full py-5 bg-gray-800 rounded-xl flex items-center justify-center gap-3 text-xl mb-4">
           <Inbox /> Inbox ({messages.length})
         </button>
 
@@ -612,20 +607,18 @@ export default function App() {
   }
 
   if (view === 'inbox') {
-    const currentMessages = msgDB.get(user.username);
-
     return (
       <div className="min-h-screen bg-black text-white font-mono p-6">
         <div className="flex items-center justify-between mb-8">
-          <h1 className="text-4xl">Inbox</h1>
+          <h1 className="text-4xl">Inbox ({messages.length})</h1>
           <button onClick={() => setView('dashboard')}><X className="w-8 h-8" /></button>
         </div>
 
-        {currentMessages.length === 0 ? (
+        {messages.length === 0 ? (
           <p className="text-center text-gray-500 text-2xl mt-32">No messages yet</p>
         ) : (
           <div className="space-y-8">
-            {currentMessages.map((m) => (
+            {messages.map((m) => (
               <MessageCard key={m.id} message={m} currentUser={user} />
             ))}
           </div>
@@ -637,7 +630,7 @@ export default function App() {
   return null;
 }
 
-// ==================== FIXED MessageCard ====================
+// ==================== MessageCard (Inbox Videos Work!) ====================
 function MessageCard({ message, currentUser }) {
   const [videoUrl, setVideoUrl] = useState('');
 
