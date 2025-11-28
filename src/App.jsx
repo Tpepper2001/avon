@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Mic, Square, Download, Share2, Copy, CheckCircle,
-  MessageSquare, LogOut, Inbox, Smartphone, Play, Pause, Trash2, Send, X, Video
+  MessageSquare, LogOut, Inbox, Smartphone, Play, Pause, Trash2, Send, X, 
+  Facebook, Twitter, Video, Disc
 } from 'lucide-react';
 
 // ------------------ Mock Auth & DB ------------------
@@ -35,12 +36,14 @@ const mockDB = {
   saveMessage: (username, msg) => {
     const key = `messages_${username}`;
     const msgs = JSON.parse(localStorage.getItem(key) || '[]');
-    msgs.push(msg);
+    msgs.unshift(msg); // Add new to top
+    // Keep only last 5 messages to save storage space
+    if (msgs.length > 5) msgs.pop(); 
     try {
       localStorage.setItem(key, JSON.stringify(msgs));
     } catch (e) {
       if (e.name === 'QuotaExceededError') {
-        throw new Error('Inbox full. LocalStorage limit reached.');
+        throw new Error('Storage full. Delete old messages.');
       }
       throw e;
     }
@@ -51,7 +54,7 @@ const mockDB = {
 // ----------------------------- Helper utilities -----------------------------
 const formatTime = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
-// NEW: Helper to convert Blob to Base64 for persistent storage
+// Convert Blob to Base64
 const blobToBase64 = (blob) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -61,33 +64,9 @@ const blobToBase64 = (blob) => {
   });
 };
 
-function wrapTextByWords(text, maxCharsPerLine = 16) {
-  const words = text.split(/\s+/);
-  const lines = [];
-  let current = '';
-  for (const w of words) {
-    if ((current + ' ' + w).trim().length <= maxCharsPerLine) {
-      current = (current + ' ' + w).trim();
-    } else {
-      if (current) lines.push(current);
-      if (w.length > maxCharsPerLine) {
-        for (let i = 0; i < w.length; i += maxCharsPerLine) {
-          lines.push(w.slice(i, i + maxCharsPerLine));
-        }
-        current = '';
-      } else {
-        current = w;
-      }
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
-}
-
 const getSupportedMimeType = () => {
   const types = [
-    'video/mp4', 'video/webm;codecs=vp8', 'video/webm',
-    'video/mp4;codecs=h264', 'video/mp4;codecs=avc1'
+    'video/webm;codecs=vp8', 'video/webm', 'video/mp4'
   ];
   for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
@@ -103,7 +82,6 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState(null);
-  const [transcript, setTranscript] = useState('');
   const [processing, setProcessing] = useState(false);
   const [previewVideo, setPreviewVideo] = useState({ url: '', mimeType: '' });
   const [messages, setMessages] = useState([]);
@@ -121,11 +99,13 @@ export default function App() {
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const canvasRef = useRef(null);
-  const recognitionRef = useRef(null);
   const audioUrlRef = useRef(null);
   const videoUrlRef = useRef(null);
   const audioContextRef = useRef(null);
   const previewAudioRef = useRef(null);
+
+  // Constants
+  const MAX_RECORDING_TIME = 15; // Limit to 15s to keep Base64 strings small
 
   useEffect(() => {
     const handleResize = () => setViewportHeight(`${window.innerHeight}px`);
@@ -143,7 +123,6 @@ export default function App() {
     }
     return () => {
       clearInterval(timerRef.current);
-      if (recognitionRef.current) try { recognitionRef.current.stop(); } catch (e) {}
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
       if (audioContextRef.current) audioContextRef.current.close();
@@ -169,12 +148,10 @@ export default function App() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 44100 } 
+        audio: { echoCancellation: true, noiseSuppression: true } 
       });
       
       audioChunksRef.current = [];
-      setTranscript('');
-
       const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
       const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
@@ -188,39 +165,26 @@ export default function App() {
       };
       recorder.start();
 
-      try {
-        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (SR) {
-          const recognition = new SR();
-          recognition.lang = 'en-US';
-          recognition.continuous = true;
-          recognition.interimResults = true;
-          let finalTranscript = '';
-          recognition.onresult = (event) => {
-            let interim = '';
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-              const t = event.results[i][0].transcript;
-              if (event.results[i].isFinal) finalTranscript += t + ' ';
-              else interim += t;
-            }
-            setTranscript((finalTranscript + interim).trim());
-          };
-          recognition.start();
-          recognitionRef.current = recognition;
-        }
-      } catch (err) { console.warn('SpeechRecognition unavailable'); }
-
       setIsRecording(true);
       setRecordingTime(0);
-      timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
+      
+      // Auto-stop timer
+      timerRef.current = setInterval(() => {
+        setRecordingTime(t => {
+          if (t >= MAX_RECORDING_TIME - 1) {
+            stopRecording();
+            return MAX_RECORDING_TIME;
+          }
+          return t + 1;
+        });
+      }, 1000);
     } catch (err) {
-      alert('Microphone access required. Please check your browser permissions.');
+      alert('Microphone access required.');
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
-    if (recognitionRef.current) try { recognitionRef.current.stop(); } catch(e){}
     setIsRecording(false);
     clearInterval(timerRef.current);
   };
@@ -228,32 +192,25 @@ export default function App() {
   const cancelRecording = () => {
     stopRecording();
     setAudioBlob(null);
-    setTranscript('');
     setRecordingTime(0);
   };
 
-  // ----------------- Video Generation -----------------
+  // ----------------- Advanced Video & Robotic Audio -----------------
   const generatePreview = async () => {
     if (!audioBlob) return alert('No audio recorded.');
-    if (!canvasRef.current.captureStream) {
-        alert("Your browser does not support video generation. Please try Chrome on Android or Desktop.");
-        return;
-    }
-
     setProcessing(true);
     setPreviewVideo({ url: '', mimeType: '' });
     
     const canvas = canvasRef.current;
-    canvas.width = 720; 
-    canvas.height = 1280;
+    canvas.width = 640;  // Lower res for performance/storage
+    canvas.height = 1136; // 9:16 aspect
     const ctx = canvas.getContext('2d', { alpha: false });
-    const textToSpeak = transcript || "Audio message";
     
     if (audioContextRef.current) {
-      try { await audioContextRef.current.close(); } catch(e) {}
+        try { await audioContextRef.current.close(); } catch(e) {}
     }
 
-    let audioCtx, recorder, analyser, source;
+    let audioCtx, recorder;
 
     try {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -264,58 +221,77 @@ export default function App() {
       const arrayBuffer = await audioBlob.arrayBuffer();
       const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
       
-      source = audioCtx.createBufferSource();
+      // --- ROBOTIC VOICE GRAPH ---
+      const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
-      source.playbackRate.value = 0.85; 
       
-      const distortion = audioCtx.createWaveShaper();
-      distortion.curve = makeDistortionCurve(20);
-      distortion.oversample = 'none';
+      // 1. Ring Modulator (Oscillator x Audio = Robot)
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = 30; // 30Hz flutter
       
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 2000;
+      const ringGain = audioCtx.createGain();
+      ringGain.gain.value = 0.0; // Carrier
       
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = 2.0;
+      const dryGain = audioCtx.createGain();
+      dryGain.gain.value = 0.5;
       
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256; 
+      const wetGain = audioCtx.createGain();
+      wetGain.gain.value = 0.8;
+
+      // 2. Metallic Delay
+      const delay = audioCtx.createDelay();
+      delay.delayTime.value = 0.02; // Short metallic slap
+      const feedback = audioCtx.createGain();
+      feedback.gain.value = 0.4;
+      
+      // Connections
+      source.connect(dryGain);
+      source.connect(wetGain);
+      
+      // Ring Mod chain
+      const oscGain = audioCtx.createGain();
+      oscGain.gain.value = 500; // Depth
+      osc.connect(oscGain);
+      oscGain.connect(wetGain.gain); // Modulate volume of source
+      
+      // Delay chain
+      wetGain.connect(delay);
+      delay.connect(feedback);
+      feedback.connect(delay);
+      
+      const masterCompressor = audioCtx.createDynamicsCompressor();
+      
+      dryGain.connect(masterCompressor);
+      delay.connect(masterCompressor);
+      
+      // Analyzer for visuals
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      masterCompressor.connect(analyser);
+      masterCompressor.connect(audioCtx.destination);
       
       const dest = audioCtx.createMediaStreamDestination();
+      masterCompressor.connect(dest);
       
-      source.connect(filter);
-      filter.connect(distortion);
-      distortion.connect(gainNode);
-      gainNode.connect(analyser);
-      analyser.connect(dest);
-      analyser.connect(audioCtx.destination); 
-      
+      osc.start();
       source.start(0);
-      
-      const canvasStream = canvas.captureStream(30);
-      const combined = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks()
-      ]);
 
-      const mimeType = getSupportedMimeType();
-      
+      // --- VISUALIZATION (CYBERPUNK) ---
+      const canvasStream = canvas.captureStream(30);
+      const combined = new MediaStream([ ...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks() ]);
+
       const recorderOptions = {
-        mimeType: mimeType || undefined,
-        videoBitsPerSecond: 1500000, 
-        audioBitsPerSecond: 128000
+        mimeType: getSupportedMimeType(),
+        videoBitsPerSecond: 1000000, // 1 Mbps
+        audioBitsPerSecond: 64000
       };
 
-      try {
-        recorder = new MediaRecorder(combined, recorderOptions);
-      } catch (e) {
-        recorder = new MediaRecorder(combined);
-      }
+      try { recorder = new MediaRecorder(combined, recorderOptions); } 
+      catch (e) { recorder = new MediaRecorder(combined); }
 
       const videoChunks = [];
-      recorder.ondataavailable = e => { if (e.data && e.data.size > 0) videoChunks.push(e.data); };
-
+      recorder.ondataavailable = e => { if (e.data.size > 0) videoChunks.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(videoChunks, { type: recorder.mimeType });
         if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
@@ -327,142 +303,151 @@ export default function App() {
 
       recorder.start();
 
-      const words = textToSpeak.split(/\s+/).filter(w => w.length > 0);
+      // --- ANIMATION LOOP ---
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
       const startTime = performance.now();
-      const audioDuration = (audioBuffer.duration / source.playbackRate.value) * 1000 + 500;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const duration = audioBuffer.duration * 1000 + 500;
       
+      // Matrix rain setup
+      const drops = Array(Math.floor(canvas.width / 20)).fill(1);
+
       const drawFrame = (timestamp) => {
         const elapsed = timestamp - startTime;
-        const progress = Math.min(elapsed / audioDuration, 1);
-        const wordIndex = Math.min(Math.floor(progress * words.length), words.length);
-
         analyser.getByteFrequencyData(dataArray);
-        const avgVolume = dataArray.reduce((a, b) => a + b) / dataArray.length / 255;
-
-        ctx.fillStyle = '#000000';
+        
+        // Dark background with slight trail for blur effect
+        ctx.fillStyle = 'rgba(0, 10, 0, 0.3)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        const cx = canvas.width / 2;
-        const cy = 400;
-        
-        ctx.fillStyle = '#0a1f1f';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 150, 0, Math.PI * 2);
-        ctx.fill();
-        
-        const eyeGlow = 10 + avgVolume * 20;
-        ctx.fillStyle = '#00ff7f';
-        ctx.shadowBlur = eyeGlow;
-        ctx.shadowColor = '#00ff7f';
-        
-        ctx.beginPath();
-        ctx.arc(cx - 50, cy - 20, 30, 0, Math.PI * 2);
-        ctx.arc(cx + 50, cy - 20, 30, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
+        // 1. Matrix Digital Rain
+        ctx.fillStyle = '#0F0';
+        ctx.font = '16px monospace';
+        for (let i = 0; i < drops.length; i++) {
+          const text = String.fromCharCode(0x30A0 + Math.random() * 96);
+          ctx.fillText(text, i * 20, drops[i] * 20);
+          if (drops[i] * 20 > canvas.height && Math.random() > 0.975) drops[i] = 0;
+          drops[i]++;
+        }
 
-        ctx.strokeStyle = '#00ff7f';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        const mouthWidth = 100;
-        const startX = cx - mouthWidth/2;
-        const startY = cy + 60;
+        // 2. Central Pulse / Robot Eye
+        const avg = dataArray.reduce((a,b)=>a+b) / bufferLength;
+        const radius = 50 + (avg * 0.8);
         
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(cx, startY + (avgVolume * 50)); 
-        ctx.lineTo(startX + mouthWidth, startY);
+        ctx.save();
+        ctx.translate(canvas.width/2, canvas.height/2);
+        
+        // Glow
+        ctx.shadowBlur = 20 + avg;
+        ctx.shadowColor = '#00ff00';
+        
+        // Circle
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 5;
         ctx.stroke();
+        
+        // Waveform inside circle
+        ctx.beginPath();
+        ctx.moveTo(-radius, 0);
+        for(let i=0; i<bufferLength; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = (v * radius/2) * Math.sin(i);
+            const x = (i/bufferLength) * (radius*2) - radius;
+            ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        
+        ctx.restore();
 
-        ctx.font = 'bold 40px monospace';
-        ctx.fillStyle = '#00ff7f';
+        // 3. Text Overlay
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 30px Courier New';
         ctx.textAlign = 'center';
+        ctx.fillText("INCOMING TRANSMISSION", canvas.width/2, 200);
         
-        const displayText = words.slice(0, wordIndex).join(' ');
-        const lines = wrapTextByWords(displayText, 20);
-        
-        lines.forEach((line, i) => {
-          ctx.fillText(line, cx, 700 + i * 50);
-        });
-
-        ctx.fillStyle = '#333';
-        ctx.fillRect(50, 1100, canvas.width - 100, 10);
-        ctx.fillStyle = '#00ff7f';
-        ctx.fillRect(50, 1100, (canvas.width - 100) * progress, 10);
-
-        if (elapsed < audioDuration) {
+        if (elapsed < duration) {
           requestAnimationFrame(drawFrame);
         } else {
-          setTimeout(() => {
-            if (recorder && recorder.state !== 'inactive') recorder.stop();
-          }, 200);
+           if (recorder.state !== 'inactive') recorder.stop();
         }
       };
-
+      
       requestAnimationFrame(drawFrame);
 
     } catch (error) {
       console.error(error);
       setProcessing(false);
-      alert('Error generating video. Try a shorter recording.');
+      alert('Error generating. Please try again.');
     }
   };
 
-  function makeDistortionCurve(amount) {
-    const k = typeof amount === 'number' ? amount : 50,
-      n_samples = 44100,
-      curve = new Float32Array(n_samples),
-      deg = Math.PI / 180;
-    for (let i = 0; i < n_samples; ++i) {
-      const x = (i * 2) / n_samples - 1;
-      curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
-    }
-    return curve;
-  }
-
-  // ----------------- Sharing -----------------
-  const shareVideoFile = async (videoUrl, type) => {
-    if (!videoUrl) return;
+  // ----------------- Persistent Storage -----------------
+  const sendMessage = async () => {
+    if (!previewVideo.url) return;
+    const recipient = targetUsername || user?.username;
+    
     try {
-      // If base64, we need to convert back to blob for sharing/downloading
-      const res = await fetch(videoUrl);
-      const blob = await res.blob();
-      
-      const ext = type && type.includes('mp4') ? 'mp4' : 'webm';
-      const file = new File([blob], `voiceanon_${Date.now()}.${ext}`, { type: blob.type });
+      setProcessing(true);
+      const response = await fetch(previewVideo.url);
+      const blob = await response.blob();
+      const base64Data = await blobToBase64(blob); // Save as Base64
 
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file] });
-      } else {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = file.name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
+      mockDB.saveMessage(recipient, {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        videoUrl: base64Data, // Persist video data
+        mimeType: previewVideo.mimeType
+      });
+      setProcessing(false);
+      setView('success');
     } catch (err) {
-      console.log('Share failed', err);
+      setProcessing(false);
+      alert(err.message || 'Failed to send.');
     }
   };
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/u/${user.username}`);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 2000);
+  // ----------------- Sharing Actions -----------------
+  const downloadVideo = async (url, mime) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `voiceanon_${Date.now()}.${mime.includes('mp4') ? 'mp4' : 'webm'}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleNativeShare = async (url, mime) => {
+    try {
+        const blob = await fetch(url).then(r => r.blob());
+        const file = new File([blob], "voice.webm", { type: mime });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], text: "Secret Voice Message" });
+        } else {
+            alert("Native sharing not supported. Use the Download button.");
+        }
+    } catch (e) { alert("Sharing failed."); }
   };
 
   // ------------------- VIEWS -------------------
   if (view === 'landing') {
     return (
-      <div className="min-h-screen bg-black text-green-500 font-mono flex flex-col justify-center px-4" style={{minHeight: viewportHeight}}>
-        <div className="text-center">
-          <Mic className="w-16 h-16 mx-auto mb-6 text-green-500" />
-          <h1 className="text-4xl font-bold mb-4 text-white">VoiceAnon</h1>
-          <p className="text-lg text-gray-400 mb-8">Secure, Anonymous Voice Messaging.</p>
-          <div className="flex flex-col gap-4">
-             <button onClick={() => setView('signin')} className="w-full py-4 border border-green-500 rounded text-lg">Login</button>
-             <button onClick={() => setView('signup')} className="w-full py-4 bg-green-500 text-black font-bold rounded text-lg">Get Started</button>
+      <div className="min-h-screen bg-black text-green-500 font-mono flex flex-col justify-center px-4 relative overflow-hidden" style={{minHeight: viewportHeight}}>
+        {/* Matrix Background Effect */}
+        <div className="absolute inset-0 opacity-20 pointer-events-none" 
+             style={{backgroundImage: 'linear-gradient(0deg, transparent 24%, rgba(0, 255, 0, .3) 25%, rgba(0, 255, 0, .3) 26%, transparent 27%, transparent 74%, rgba(0, 255, 0, .3) 75%, rgba(0, 255, 0, .3) 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, rgba(0, 255, 0, .3) 25%, rgba(0, 255, 0, .3) 26%, transparent 27%, transparent 74%, rgba(0, 255, 0, .3) 75%, rgba(0, 255, 0, .3) 76%, transparent 77%, transparent)', backgroundSize: '50px 50px'}}>
+        </div>
+        
+        <div className="text-center z-10">
+          <div className="w-20 h-20 mx-auto mb-6 bg-green-900/30 rounded-full flex items-center justify-center border border-green-500 animate-pulse">
+             <Mic className="w-10 h-10 text-green-400" />
+          </div>
+          <h1 className="text-5xl font-black mb-2 text-white tracking-tighter" style={{textShadow: '0 0 10px #0f0'}}>VOICE_ANON</h1>
+          <p className="text-sm text-green-400 mb-8 font-mono">ENCRYPTED. ANONYMOUS. ROBOTIC.</p>
+          <div className="flex flex-col gap-4 max-w-xs mx-auto">
+             <button onClick={() => setView('signin')} className="w-full py-4 border border-green-500 text-green-400 font-bold rounded hover:bg-green-900/50 transition">LOGIN TERMINAL</button>
+             <button onClick={() => setView('signup')} className="w-full py-4 bg-green-600 text-black font-black rounded hover:bg-green-500 transition shadow-[0_0_15px_rgba(0,255,0,0.5)]">INITIATE IDENTITY</button>
           </div>
         </div>
       </div>
@@ -479,15 +464,15 @@ export default function App() {
     };
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4 font-mono" style={{minHeight: viewportHeight}}>
-        <div className="w-full max-w-sm">
-          <h2 className="text-2xl text-green-500 mb-6 text-center">{isIn ? 'Access Terminal' : 'New Identity'}</h2>
+        <div className="w-full max-w-sm border border-green-800 p-6 rounded bg-gray-900/80 backdrop-blur">
+          <h2 className="text-2xl text-green-500 mb-6 text-center glitch" data-text={isIn ? 'ACCESS' : 'CREATE'}>{isIn ? 'ACCESS_TERMINAL' : 'NEW_IDENTITY'}</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
-            {!isIn && <input type="text" placeholder="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)} className="w-full p-4 bg-gray-900 border border-green-800 text-white rounded focus:outline-none focus:border-green-500" required />}
-            <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full p-4 bg-gray-900 border border-green-800 text-white rounded focus:outline-none focus:border-green-500" required />
-            <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full p-4 bg-gray-900 border border-green-800 text-white rounded focus:outline-none focus:border-green-500" required />
-            <button type="submit" className="w-full py-4 bg-green-500 text-black font-bold rounded hover:bg-green-400">{isIn ? 'Login' : 'Initialize'}</button>
+            {!isIn && <input type="text" placeholder="CODENAME (USERNAME)" value={authUsername} onChange={e => setAuthUsername(e.target.value)} className="w-full p-4 bg-black border border-green-800 text-green-400 placeholder-green-900 outline-none focus:border-green-400" required />}
+            <input type="email" placeholder="EMAIL" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full p-4 bg-black border border-green-800 text-green-400 placeholder-green-900 outline-none focus:border-green-400" required />
+            <input type="password" placeholder="PASSWORD" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full p-4 bg-black border border-green-800 text-green-400 placeholder-green-900 outline-none focus:border-green-400" required />
+            <button type="submit" className="w-full py-4 bg-green-700 text-black font-bold rounded hover:bg-green-600 uppercase">{isIn ? 'Decrypt & Enter' : 'Establish Link'}</button>
           </form>
-          <button onClick={() => setView(isIn ? 'signup' : 'signin')} className="w-full mt-6 text-gray-500 p-2">Switch Mode</button>
+          <button onClick={() => setView(isIn ? 'signup' : 'signin')} className="w-full mt-6 text-green-800 text-xs text-center hover:text-green-500">SWITCH PROTOCOL</button>
         </div>
       </div>
     );
@@ -497,21 +482,24 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gray-900 text-white font-mono flex flex-col" style={{minHeight: viewportHeight}}>
         <div className="flex-1 flex flex-col items-center justify-center p-4">
-          <h1 className="text-xl mb-2 text-gray-400">Welcome, {user?.username}</h1>
-          <div className="bg-black border border-green-500 p-6 rounded-lg w-full max-w-sm text-center mb-8">
-            <p className="text-sm text-green-500 mb-2">YOUR ANONYMOUS LINK</p>
-            <code className="block mb-6 bg-gray-900 p-2 rounded text-xs break-all">{window.location.origin}/u/{user?.username}</code>
-            <button onClick={copyLink} className="w-full py-3 bg-green-600 text-white rounded flex items-center justify-center gap-2">
-              {linkCopied ? <CheckCircle size={18} /> : <Copy size={18} />} {linkCopied ? 'Copied' : 'Copy Link'}
+          <h1 className="text-xl mb-6 text-green-500 font-bold tracking-widest">DASHBOARD_V1.0</h1>
+          
+          <div className="bg-black border border-green-600 p-6 rounded-lg w-full max-w-sm text-center mb-8 shadow-[0_0_20px_rgba(0,255,0,0.1)]">
+            <p className="text-xs text-green-800 mb-2 font-bold uppercase">Your Anonymous Dropzone</p>
+            <div className="bg-gray-900 p-3 rounded mb-4 border border-green-900 flex items-center justify-between">
+                <code className="text-[10px] text-green-400 break-all">{window.location.origin}/u/{user?.username}</code>
+            </div>
+            <button onClick={copyLink} className="w-full py-3 bg-green-900/50 border border-green-600 text-green-400 rounded hover:bg-green-800 flex items-center justify-center gap-2">
+              {linkCopied ? <CheckCircle size={16} /> : <Copy size={16} />} {linkCopied ? 'LINK COPIED' : 'COPY LINK'}
             </button>
           </div>
           
-          <button onClick={() => { setMessages(mockDB.getMessages(user.username)); setView('inbox'); }} className="w-full max-w-sm py-4 bg-gray-800 rounded flex items-center justify-center gap-2 mb-4">
-            <Inbox size={20} /> View Inbox
+          <button onClick={() => { setMessages(mockDB.getMessages(user.username)); setView('inbox'); }} className="w-full max-w-sm py-4 bg-gray-800 text-white rounded flex items-center justify-center gap-2 mb-4 hover:bg-gray-700">
+            <Inbox size={20} className="text-green-500" /> DECRYPT INBOX
           </button>
           
-          <button onClick={() => { mockAuth.signOut(); setView('landing'); }} className="text-gray-500 flex items-center gap-2 mt-4">
-            <LogOut size={16} /> Sign Out
+          <button onClick={() => { mockAuth.signOut(); setView('landing'); }} className="text-red-900 flex items-center gap-2 mt-8 text-sm hover:text-red-500">
+            <LogOut size={16} /> TERMINATE SESSION
           </button>
         </div>
       </div>
@@ -519,149 +507,85 @@ export default function App() {
   }
 
   if (view === 'record') {
-    // MODIFIED: Converts Blob to Base64 to survive page reloads/view changes in LocalStorage
-    const sendMessage = async () => {
-      if (!previewVideo.url) return;
-      
-      // If we are in testing mode (not on a /u/ link), send to self
-      const recipient = targetUsername || user?.username;
-      if (!recipient) return alert("No recipient specified");
-
-      try {
-        setProcessing(true);
-        const response = await fetch(previewVideo.url);
-        const blob = await response.blob();
-        const base64Data = await blobToBase64(blob);
-
-        mockDB.saveMessage(recipient, {
-          id: Date.now().toString(),
-          text: transcript || 'Voice Message',
-          timestamp: new Date().toISOString(),
-          duration: recordingTime,
-          videoUrl: base64Data, // Saving Actual Data
-          mimeType: previewVideo.mimeType
-        });
-        setProcessing(false);
-        setView('success');
-      } catch (err) {
-        setProcessing(false);
-        console.error(err);
-        if (err.message.includes('Limit')) alert('Inbox is full (Browser Limit). Clear messages.');
-        else alert('Failed to send. Video might be too large.');
-      }
-    };
-
-    const togglePreviewPlay = () => {
-        if (!previewAudioRef.current) {
-            previewAudioRef.current = new Audio(audioUrlRef.current);
-            previewAudioRef.current.onended = () => setIsPlayingPreview(false);
-        }
-        if (isPlayingPreview) {
-            previewAudioRef.current.pause();
-            setIsPlayingPreview(false);
-        } else {
-            previewAudioRef.current.play();
-            setIsPlayingPreview(true);
-        }
-    };
-
     return (
-      <div className="bg-[#111b21] flex flex-col relative font-sans overflow-hidden" style={{height: viewportHeight}}>
+      <div className="bg-black flex flex-col relative font-sans overflow-hidden" style={{height: viewportHeight}}>
         <canvas ref={canvasRef} className="hidden" />
         
         {/* Header */}
-        <div className="bg-[#202c33] p-3 flex items-center gap-3 shadow-md z-10 shrink-0">
-            <div className="w-8 h-8 rounded-full bg-gray-500 flex items-center justify-center text-white font-bold">
+        <div className="bg-gray-900 p-3 flex items-center gap-3 border-b border-green-900/30 z-10 shrink-0">
+            <div className="w-8 h-8 rounded bg-green-900 flex items-center justify-center text-green-400 font-mono font-bold border border-green-500">
                 {(targetUsername || user?.username || '?')[0].toUpperCase()}
             </div>
             <div>
-                <h2 className="text-white font-bold text-sm">@{targetUsername || user?.username || 'You'}</h2>
-                <p className="text-[10px] text-gray-400">Encrypting...</p>
+                <h2 className="text-green-500 font-mono font-bold text-sm">TARGET: @{targetUsername || 'SELF'}</h2>
+                <p className="text-[9px] text-gray-500 font-mono uppercase">Secure Line // {processing ? 'ENCODING...' : 'READY'}</p>
             </div>
-            {/* Allow exit if in self-test mode */}
-            {!targetUsername && <button onClick={() => setView('dashboard')} className="ml-auto text-gray-400"><X /></button>}
+            {!targetUsername && <button onClick={() => setView('dashboard')} className="ml-auto text-gray-500"><X /></button>}
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 relative flex flex-col items-center justify-center p-4" 
-             style={{backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundBlendMode: 'overlay'}}>
+        {/* Viewfinder / Main Area */}
+        <div className="flex-1 relative flex flex-col items-center justify-center p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 to-black">
             
-            {/* Loading / Video State */}
+            {/* Grid Overlay */}
+            <div className="absolute inset-0 pointer-events-none" style={{backgroundImage: 'linear-gradient(rgba(0, 255, 0, 0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 0, 0.1) 1px, transparent 1px)', backgroundSize: '40px 40px'}}></div>
+
             {previewVideo.url ? (
-                <div className="bg-[#202c33] p-2 rounded-lg w-full max-w-sm shadow-xl animate-fade-in">
-                    <video 
-                        src={previewVideo.url} 
-                        controls 
-                        playsInline 
-                        webkit-playsinline="true"
-                        className="w-full rounded bg-black max-h-[60vh]" 
-                    />
-                    <div className="flex justify-between items-center mt-3 px-2">
-                         <button onClick={() => { setPreviewVideo({url:'', mimeType:''}); setProcessing(false); }} className="p-2 text-red-400"><Trash2 size={24} /></button>
+                <div className="relative w-full max-w-sm animate-fade-in z-20">
+                    <div className="border-2 border-green-500 rounded bg-black shadow-[0_0_20px_rgba(0,255,0,0.3)] overflow-hidden relative">
+                         <video src={previewVideo.url} controls playsInline className="w-full bg-black max-h-[60vh]" />
+                         <div className="absolute top-2 right-2 text-[10px] text-green-500 font-mono bg-black/80 px-2 border border-green-500">PREVIEW_MODE</div>
+                    </div>
+                    
+                    <div className="flex gap-2 mt-4">
+                         <button onClick={() => { setPreviewVideo({url:'', mimeType:''}); setProcessing(false); }} className="p-3 bg-red-900/20 text-red-500 border border-red-900 rounded"><Trash2 /></button>
                          {processing ? (
-                            <div className="text-green-500 text-xs">Processing...</div>
+                            <div className="flex-1 bg-green-900/20 border border-green-500 text-green-500 flex items-center justify-center font-mono animate-pulse">UPLOADING...</div>
                          ) : (
-                            <button onClick={sendMessage} className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white shadow-lg"><Send size={24} /></button>
+                            <button onClick={sendMessage} className="flex-1 bg-green-600 hover:bg-green-500 text-black font-bold py-3 rounded uppercase tracking-wider shadow-[0_0_15px_rgba(0,255,0,0.4)]">TRANSMIT</button>
                          )}
                     </div>
                 </div>
             ) : processing ? (
-                <div className="flex flex-col items-center justify-center">
-                    <div className="w-16 h-16 border-4 border-[#00a884] border-t-transparent rounded-full animate-spin mb-4"></div>
-                    <p className="text-[#00a884] font-mono text-sm animate-pulse">ENCRYPTING VOICE DATA...</p>
+                <div className="flex flex-col items-center justify-center z-20">
+                    <div className="w-20 h-20 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p className="text-green-500 font-mono text-sm animate-pulse tracking-widest">RENDERING VISUALS...</p>
                 </div>
             ) : audioBlob ? (
-                 <div className="w-full max-w-sm animate-slide-up">
-                     <div className="bg-[#005c4b] p-4 rounded-lg shadow-xl mb-4 relative">
-                         <div className="flex items-center gap-4">
-                             <button onClick={togglePreviewPlay} className="text-white">
-                                 {isPlayingPreview ? <Pause size={32} className="fill-current" /> : <Play size={32} className="fill-current" />}
-                             </button>
-                             <div className="flex-1">
-                                 <div className="h-1 bg-white/30 rounded-full w-full mb-1">
-                                     <div className={`h-full bg-white rounded-full ${isPlayingPreview ? 'animate-[width_2s_linear]' : 'w-0'}`}></div>
-                                 </div>
-                                 <div className="flex justify-between text-[10px] text-green-100">
-                                     <span>{formatTime(recordingTime)}</span>
-                                 </div>
-                             </div>
+                 <div className="w-full max-w-sm z-20">
+                     <div className="bg-gray-900 border border-green-800 p-6 rounded mb-6 text-center">
+                         <div className="text-4xl text-white font-mono mb-2">{formatTime(recordingTime)}</div>
+                         <div className="text-xs text-green-500 uppercase tracking-widest mb-4">Audio Captured</div>
+                         <div className="flex justify-center gap-4">
+                             <button onClick={cancelRecording} className="text-red-500 text-xs uppercase border-b border-red-900">Discard</button>
+                             <button onClick={() => { 
+                                 const audio = new Audio(audioUrlRef.current);
+                                 audio.play();
+                             }} className="text-green-400 text-xs uppercase border-b border-green-900">Review Audio</button>
                          </div>
                      </div>
-                     <div className="flex gap-3">
-                        <button onClick={cancelRecording} className="p-4 rounded-full bg-[#202c33] text-red-400"><Trash2 size={24} /></button>
-                        <button onClick={generatePreview} className="flex-1 bg-[#00a884] text-white font-bold rounded-full shadow-lg flex items-center justify-center gap-2">
-                             CONVERT TO VIDEO <Smartphone size={20} />
-                        </button>
-                     </div>
+                     <button onClick={generatePreview} className="w-full bg-green-600 text-black font-bold py-4 rounded uppercase tracking-wider shadow-[0_0_20px_rgba(0,255,0,0.4)] flex items-center justify-center gap-2">
+                        <Smartphone size={20} /> GENERATE ROBOT VIDEO
+                     </button>
                  </div>
             ) : (
-                <div className="text-center opacity-50">
-                    <Mic className="w-12 h-12 text-white mx-auto mb-2 opacity-50" />
-                    <p className="text-gray-400 text-xs">Tap mic to record</p>
+                <div className="text-center z-20">
+                    <div className={`w-32 h-32 rounded-full border-2 border-green-500 flex items-center justify-center mx-auto mb-6 transition-all duration-300 ${isRecording ? 'scale-110 shadow-[0_0_30px_#0f0] bg-green-900/20' : 'opacity-50'}`}>
+                        <Mic className={`w-12 h-12 ${isRecording ? 'text-white animate-pulse' : 'text-green-500'}`} />
+                    </div>
+                    <p className="text-green-500 font-mono text-xs uppercase tracking-[0.2em]">{isRecording ? 'RECORDING VOICE DATA...' : 'TAP MIC TO RECORD'}</p>
+                    {isRecording && <p className="text-red-500 font-mono mt-2">{MAX_RECORDING_TIME - recordingTime}s REMAINING</p>}
                 </div>
             )}
         </div>
 
+        {/* Footer Controls */}
         {!audioBlob && !processing && !previewVideo.url && (
-            <div className="w-full bg-[#202c33] px-2 py-3 flex items-center justify-between gap-2 shrink-0 pb-safe">
-                {isRecording ? (
-                    <div className="flex-1 flex items-center gap-3 pl-4">
-                        <span className="text-red-500 animate-pulse text-xs">● REC</span>
-                        <span className="text-white text-xl font-mono">{formatTime(recordingTime)}</span>
-                        <button onClick={cancelRecording} className="ml-auto mr-4 text-gray-400 text-sm font-medium">Cancel</button>
-                    </div>
-                ) : (
-                    <div className="flex-1 bg-[#2a3942] rounded-full h-12 flex items-center px-4 text-gray-400 text-sm select-none">
-                        Type a message...
-                    </div>
-                )}
-
+            <div className="w-full bg-black border-t border-green-900 p-4 pb-8 flex items-center justify-center">
                 <button 
                     onClick={isRecording ? stopRecording : startRecording}
-                    className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg ${isRecording ? 'bg-red-500 scale-110' : 'bg-[#00a884] active:scale-95'}`}
-                    style={{touchAction: 'manipulation'}}
+                    className={`w-16 h-16 rounded-full flex items-center justify-center border-2 transition-all duration-200 ${isRecording ? 'border-red-500 bg-red-900/50' : 'border-green-500 hover:bg-green-900/30'}`}
                 >
-                    {isRecording ? <Square className="fill-white text-white w-5 h-5" /> : <Mic className="text-white w-6 h-6" />}
+                    {isRecording ? <Square className="fill-red-500 text-red-500 w-6 h-6" /> : <div className="w-4 h-4 rounded-full bg-green-500 shadow-[0_0_10px_#0f0]"></div>}
                 </button>
             </div>
         )}
@@ -673,46 +597,79 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gray-900 p-4 font-mono overflow-y-auto" style={{height: viewportHeight}}>
          {view === 'success' && (
-           <div className="flex flex-col items-center justify-center h-full">
-             <CheckCircle className="w-24 h-24 text-green-500 mb-6" />
-             <h2 className="text-2xl text-white font-bold mb-8">Sent Anonymously</h2>
-             <button onClick={() => { setView('record'); setPreviewVideo({url:'', mimeType:''}); setAudioBlob(null); setTranscript(''); }} className="px-8 py-3 bg-gray-800 text-green-500 rounded-full border border-green-500">Send Another</button>
-             <button onClick={() => setView('dashboard')} className="mt-4 text-gray-500">Back to Dashboard</button>
+           <div className="flex flex-col items-center justify-center h-full animate-fade-in">
+             <div className="w-20 h-20 bg-green-900/30 rounded-full flex items-center justify-center mb-6 border border-green-500 shadow-[0_0_20px_#0f0]">
+                <CheckCircle className="w-10 h-10 text-green-400" />
+             </div>
+             <h2 className="text-2xl text-white font-bold mb-2">TRANSMISSION SENT</h2>
+             <p className="text-gray-500 text-xs mb-8">The recipient can now decrypt this message.</p>
+             <button onClick={() => { setView('record'); setPreviewVideo({url:'', mimeType:''}); setAudioBlob(null); }} className="w-full max-w-xs py-3 bg-gray-800 text-green-500 rounded border border-green-900 mb-3">SEND ANOTHER</button>
+             <button onClick={() => setView('dashboard')} className="text-gray-500 text-sm">RETURN TO BASE</button>
            </div>
          )}
          
          {view === 'inbox' && (
-            <div className="pb-12">
-              <div className="flex items-center gap-4 mb-6 sticky top-0 bg-gray-900 py-4 z-10 border-b border-gray-800">
-                <button onClick={() => setView('dashboard')} className="text-white"><X /></button>
-                <h2 className="text-xl text-white font-bold">Inbox</h2>
+            <div className="pb-12 max-w-md mx-auto">
+              <div className="flex items-center justify-between mb-6 sticky top-0 bg-gray-900/95 backdrop-blur py-4 z-10 border-b border-gray-800">
+                <h2 className="text-xl text-green-500 font-bold uppercase tracking-widest">INBOX</h2>
+                <button onClick={() => setView('dashboard')} className="text-white bg-gray-800 p-2 rounded-full"><X size={16}/></button>
               </div>
               
-              {messages.length === 0 && <p className="text-gray-500 text-center mt-10">No messages yet.</p>}
+              {messages.length === 0 && (
+                  <div className="text-center mt-20 opacity-50">
+                      <Disc className="w-16 h-16 mx-auto mb-4 text-green-900" />
+                      <p className="text-green-800">NO TRANSMISSIONS FOUND</p>
+                  </div>
+              )}
 
-              {messages.map(m => (
-                <div key={m.id} className="bg-black border border-gray-800 p-3 rounded-lg mb-6">
-                   <div className="aspect-[9/16] bg-gray-900 rounded mb-3 overflow-hidden">
+              {messages.map((m, i) => (
+                <div key={m.id || i} className="bg-black border border-green-900/50 p-4 rounded-xl mb-6 shadow-lg">
+                   {/* Video Player */}
+                   <div className="aspect-[9/16] bg-gray-900 rounded-lg mb-4 overflow-hidden border border-gray-800 relative group">
                        <video 
                            src={m.videoUrl} 
                            controls 
                            playsInline 
-                           webkit-playsinline="true"
-                           className="w-full h-full object-contain" 
+                           className="w-full h-full object-cover" 
                         />
                    </div>
-                   <div className="flex gap-2">
-                      <button onClick={() => shareVideoFile(m.videoUrl, m.mimeType)} className="flex-1 py-3 bg-[#25D366] text-white font-bold rounded flex items-center justify-center gap-2 text-sm">
-                        <MessageSquare size={18} /> Share
-                      </button>
-                      <button onClick={() => shareVideoFile(m.videoUrl, m.mimeType)} className="flex-1 py-3 bg-[#333] text-white rounded flex items-center justify-center gap-2 text-sm">
-                         <Download size={18} /> Save
-                      </button>
-                   </div>
-                   <div className="mt-2 flex justify-between text-xs text-gray-600">
+
+                   {/* Date Stamp */}
+                   <div className="flex justify-between text-[10px] text-gray-500 mb-4 font-mono border-b border-gray-800 pb-2">
+                      <span>ID: {m.id.slice(-6)}</span>
                       <span>{new Date(m.timestamp).toLocaleDateString()}</span>
-                      <span>{m.mimeType?.split('/')[1] || 'video'}</span>
                    </div>
+                   
+                   {/* Social Grid */}
+                   <div className="grid grid-cols-4 gap-2">
+                      {/* TikTok / General Download */}
+                      <button onClick={() => downloadVideo(m.videoUrl, m.mimeType)} className="flex flex-col items-center gap-1 p-2 rounded hover:bg-gray-900 transition">
+                         <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-white"><Download size={18} /></div>
+                         <span className="text-[9px] text-gray-400">TikTok/DL</span>
+                      </button>
+
+                      {/* WhatsApp */}
+                      <a href={`https://wa.me/?text=${encodeURIComponent("Check out this anonymous voice message: " + window.location.origin)}`} target="_blank" rel="noreferrer" className="flex flex-col items-center gap-1 p-2 rounded hover:bg-gray-900 transition">
+                         <div className="w-10 h-10 rounded-full bg-[#25D366] flex items-center justify-center text-black"><MessageSquare size={18} /></div>
+                         <span className="text-[9px] text-gray-400">WhatsApp</span>
+                      </a>
+
+                      {/* Twitter / X */}
+                      <a href={`https://twitter.com/intent/tweet?text=${encodeURIComponent("I just received a secure robotic transmission via VoiceAnon. " + window.location.origin)}`} target="_blank" rel="noreferrer" className="flex flex-col items-center gap-1 p-2 rounded hover:bg-gray-900 transition">
+                         <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-black"><Twitter size={18} /></div>
+                         <span className="text-[9px] text-gray-400">Twitter/X</span>
+                      </a>
+
+                      {/* Facebook */}
+                      <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(window.location.origin)}`} target="_blank" rel="noreferrer" className="flex flex-col items-center gap-1 p-2 rounded hover:bg-gray-900 transition">
+                         <div className="w-10 h-10 rounded-full bg-[#1877F2] flex items-center justify-center text-white"><Facebook size={18} /></div>
+                         <span className="text-[9px] text-gray-400">Facebook</span>
+                      </a>
+                   </div>
+
+                   <button onClick={() => handleNativeShare(m.videoUrl, m.mimeType)} className="w-full mt-4 py-2 bg-gray-900 text-green-500 text-xs rounded border border-green-900/30">
+                       OPEN NATIVE SHARE MENU
+                   </button>
                 </div>
               ))}
             </div>
