@@ -42,18 +42,27 @@ logout() { localStorage.removeItem('vox_session'); }
 
 // ==================== Message DB ====================
 const voxDB = {
-save(voxKey, msg) {
-const key = vox_${voxKey};
-let list = JSON.parse(localStorage.getItem(key) || '[]');
-list.unshift({ ...msg, id: crypto.randomUUID() });
-if (list.length > 100) list.pop();
-localStorage.setItem(key, JSON.stringify(list));
-},
+  save(voxKey, msg) {
+    const key = `vox_${voxKey}`;
+    let list = JSON.parse(localStorage.getItem(key) || '[]');
+    list.unshift({ ...msg, id: crypto.randomUUID() });
+    if (list.length > 100) list.pop();
+    localStorage.setItem(key, JSON.stringify(list));
+  },
 
-get(voxKey) {
-const key = vox_${voxKey};
-return JSON.parse(localStorage.getItem(key) || '[]');
-},
+  get(voxKey) {
+    const key = `vox_${voxKey}`;
+    return JSON.parse(localStorage.getItem(key) || '[]');
+  },
+
+  delete(voxKey, id) {
+    const key = `vox_${voxKey}`;
+    let list = JSON.parse(localStorage.getItem(key) || '[]');
+    list = list.filter(m => m.id !== id);
+    localStorage.setItem(key, JSON.stringify(list));
+  }
+};
+
 
 delete(voxKey, id) {
 const key = vox_${voxKey};
