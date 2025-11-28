@@ -1,4 +1,4 @@
-// src/App.jsx — VoiceAnon v3.2 — FINAL FIXED VERSION (Inbox Works!)
+// src/App.jsx — VoiceAnon v3.3 — IDB FIXED VERSION
 import React, {
   useEffect,
   useRef,
@@ -22,7 +22,7 @@ import {
   User,
 } from 'lucide-react';
 
-// ==================== Secure Mock Auth ====================
+// ==================== Secure Mock Auth (Keep LocalStorage for small text) ====================
 const mockAuth = {
   currentUser: null,
 
@@ -83,40 +83,66 @@ const mockAuth = {
   },
 };
 
-// ==================== Message DB ====================
-const MAX_VIDEO_BASE64 = 18 * 1024 * 1024;
-const MAX_MESSAGES = 50;
+// ==================== NEW: IndexedDB Wrapper (Fixes Storage Limit) ====================
+const DB_NAME = 'VoiceAnon_DB';
+const STORE_NAME = 'messages';
+const DB_VERSION = 1;
+
+const initDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
 
 const msgDB = {
   async save(username, msg) {
-    if (msg.videoBase64.length > MAX_VIDEO_BASE64) {
-      throw new Error('Video too large (max ~15 seconds)');
-    }
-    const key = `va_msgs_${username}`;
-    let list = JSON.parse(localStorage.getItem(key) || '[]');
-    list.unshift({ ...msg, id: crypto.randomUUID() });
-    if (list.length > MAX_MESSAGES) list = list.slice(0, MAX_MESSAGES);
-
-    try {
-      localStorage.setItem(key, JSON.stringify(list));
-    } catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        list = list.slice(0, 10);
-        localStorage.setItem(key, JSON.stringify(list));
-        alert('Storage full — keeping only 10 newest messages');
-      } else throw e;
-    }
+    const db = await initDB();
+    // We store the 'recipient' property to filter later
+    const entry = { ...msg, recipient: username };
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.add(entry);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   },
 
-  get(username) {
-    return JSON.parse(localStorage.getItem(`va_msgs_${username}`) || '[]');
+  async get(username) {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const allMsgs = request.result;
+        // Filter by recipient matches current user
+        const userMsgs = allMsgs.filter((m) => m.recipient === username);
+        // Sort newest first
+        userMsgs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        resolve(userMsgs);
+      };
+      request.onerror = () => reject(request.error);
+    });
   },
 
-  delete(username, id) {
-    const key = `va_msgs_${username}`;
-    let list = JSON.parse(localStorage.getItem(key) || '[]');
-    list = list.filter((m) => m.id !== id);
-    localStorage.setItem(key, JSON.stringify(list));
+  async delete(id) {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   },
 };
 
@@ -152,7 +178,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('landing');
   const [targetUsername, setTargetUsername] = useState('');
-  const [messages, setMessages] = useState([]); // Live inbox messages
+  const [messages, setMessages] = useState([]); 
+  const [messagesLoading, setMessagesLoading] = useState(false);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -199,12 +226,26 @@ export default function App() {
     };
   }, []);
 
+  // Helper to load messages (async)
+  const refreshMessages = async (username) => {
+    if (!username) return;
+    setMessagesLoading(true);
+    try {
+      const msgs = await msgDB.get(username);
+      setMessages(msgs);
+    } catch (e) {
+      console.error("Failed to load inbox", e);
+    } finally {
+      setMessagesLoading(false);
+    }
+  };
+
   // Initial load + routing
   useLayoutEffect(() => {
     mockAuth.init();
     if (mockAuth.currentUser) {
       setUser(mockAuth.currentUser);
-      setMessages(msgDB.get(mockAuth.currentUser.username));
+      refreshMessages(mockAuth.currentUser.username); // Async load
       setView('dashboard');
     }
 
@@ -218,10 +259,10 @@ export default function App() {
     }
   }, []);
 
-  // Keep inbox updated when view changes
+  // Keep inbox updated when view changes to inbox
   useEffect(() => {
     if (view === 'inbox' && user) {
-      setMessages(msgDB.get(user.username));
+      refreshMessages(user.username);
     }
   }, [view, user]);
 
@@ -399,7 +440,7 @@ export default function App() {
     }
   };
 
-  // ==================== SEND MESSAGE — NOW UPDATES INBOX ====================
+  // ==================== SEND MESSAGE ====================
   const sendMessage = async () => {
     if (!previewVideo) return;
     setProcessing(true);
@@ -410,22 +451,25 @@ export default function App() {
         text: transcript.trim() || 'Voice message',
         timestamp: new Date().toISOString(),
         duration: recordingTime,
-        videoBase64: base64,
+        videoBase64: base64, // Stored in IndexedDB now (large size OK)
         mimeType: previewVideo.blob.type,
       };
 
-      const recipient = targetUsername || user.username;
+      const recipient = targetUsername || user?.username;
+      
+      // Save to IDB
       await msgDB.save(recipient, msg);
 
-      // CRITICAL FIX: Update inbox if sending to self
+      // Update local inbox if sending to self
       if (user?.username === recipient) {
-        setMessages(msgDB.get(user.username));
+        await refreshMessages(user.username);
       }
 
       cancelRecording();
       setView('success');
     } catch (e) {
-      alert(e.message || 'Failed to send');
+      console.error(e);
+      alert('Failed to send: ' + e.message);
     } finally {
       setProcessing(false);
     }
@@ -463,7 +507,7 @@ export default function App() {
           ? await mockAuth.signIn(authEmail.trim(), authPassword)
           : await mockAuth.signUp(authEmail.trim(), authPassword, authUsername.trim());
         setUser(u);
-        setMessages(msgDB.get(u.username));
+        await refreshMessages(u.username);
         setView('dashboard');
       } catch (err) {
         setAuthError(err.message);
@@ -602,6 +646,9 @@ export default function App() {
         <button onClick={() => { cancelRecording(); setView('record'); }} className="px-12 py-6 bg-green-600 rounded-xl text-2xl">
           Send Another
         </button>
+        <button onClick={() => setView('dashboard')} className="mt-6 text-gray-400 hover:text-white">
+           Return to Dashboard
+        </button>
       </div>
     );
   }
@@ -614,12 +661,17 @@ export default function App() {
           <button onClick={() => setView('dashboard')}><X className="w-8 h-8" /></button>
         </div>
 
-        {messages.length === 0 ? (
+        {messagesLoading ? (
+           <div className="flex justify-center mt-32"><Loader2 className="w-12 h-12 animate-spin text-green-500"/></div>
+        ) : messages.length === 0 ? (
           <p className="text-center text-gray-500 text-2xl mt-32">No messages yet</p>
         ) : (
           <div className="space-y-8">
             {messages.map((m) => (
-              <MessageCard key={m.id} message={m} currentUser={user} />
+              <MessageCard key={m.id} message={m} currentUser={user} onDelete={async () => {
+                 await msgDB.delete(m.id);
+                 refreshMessages(user.username);
+              }} />
             ))}
           </div>
         )}
@@ -631,7 +683,7 @@ export default function App() {
 }
 
 // ==================== MessageCard (Inbox Videos Work!) ====================
-function MessageCard({ message, currentUser }) {
+function MessageCard({ message, currentUser, onDelete }) {
   const [videoUrl, setVideoUrl] = useState('');
 
   useEffect(() => {
@@ -706,10 +758,7 @@ function MessageCard({ message, currentUser }) {
           <button onClick={handleDownload} className="flex-1 py-4 bg-gray-800 rounded-xl flex items-center justify-center gap-2">
             <Download /> Save
           </button>
-          <button onClick={() => {
-            msgDB.delete(currentUser.username, message.id);
-            window.location.reload();
-          }} className="px-8 py-4 bg-red-900 rounded-xl">
+          <button onClick={onDelete} className="px-8 py-4 bg-red-900 rounded-xl">
             <Trash2 />
           </button>
         </div>
