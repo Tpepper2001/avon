@@ -289,7 +289,7 @@ const VoxKey = () => {
   };
 
   const copyLink = () => {
-    navigator.clipboard.writeText(`voxkey.com/key/${voxKey}`);
+    navigator.clipboard.writeText(`/key/${voxKey}`);
     alert('Link copied!');
   };
 
