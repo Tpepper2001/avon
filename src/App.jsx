@@ -54,6 +54,12 @@ const VoxKey = () => {
     }
   }, []);
 
+  // Debug: Log current users
+  useEffect(() => {
+    console.log('Current users in db:', db.users);
+    console.log('Looking for VoxKey:', senderKey);
+  }, [senderKey]);
+
   const loadMessages = () => {
     if (db.currentUser) {
       const userMessages = db.messages.filter(m => m.recipientKey === db.currentUser.voxKey);
@@ -129,14 +135,26 @@ const VoxKey = () => {
     canvas.height = 1920;
     const ctx = canvas.getContext('2d');
     
-    const audio = new Audio(URL.createObjectURL(audioBlob));
+    // Create audio element for playback
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
     await audio.load();
     
+    // Setup audio processing
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioContext.createMediaElementSource(audio);
+    
+    // Decode the audio blob to get the buffer
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    
+    // Create buffer source for processing
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    
     const analyser = audioContext.createAnalyser();
     const distortion = audioContext.createWaveShaper();
     const gainNode = audioContext.createGain();
+    const destination = audioContext.createMediaStreamDestination();
     
     // Heavy distortion curve
     const makeDistortionCurve = (amount = 50) => {
@@ -150,24 +168,37 @@ const VoxKey = () => {
       return curve;
     };
     
-    distortion.curve = makeDistortionCurve(100);
+    distortion.curve = makeDistortionCurve(80);
+    distortion.oversample = '4x';
     analyser.fftSize = 256;
+    gainNode.gain.value = 1.5;
     
+    // Connect audio nodes
     source.connect(distortion);
     distortion.connect(gainNode);
     gainNode.connect(analyser);
-    analyser.connect(audioContext.destination);
+    analyser.connect(destination);
     
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
     
-    const chunks = [];
-    const stream = canvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+    // Setup video recording with audio from destination
+    const videoChunks = [];
+    const videoStream = canvas.captureStream(30);
+    const audioTracks = destination.stream.getAudioTracks();
+    audioTracks.forEach(track => videoStream.addTrack(track));
     
-    recorder.ondataavailable = (e) => chunks.push(e.data);
+    const recorder = new MediaRecorder(videoStream, { 
+      mimeType: 'video/webm;codecs=vp8,opus',
+      audioBitsPerSecond: 128000
+    });
+    
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) videoChunks.push(e.data);
+    };
+    
     recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
+      const blob = new Blob(videoChunks, { type: 'video/webm' });
       const url = URL.createObjectURL(blob);
       setVideoUrl(url);
       setProcessing(false);
@@ -175,13 +206,13 @@ const VoxKey = () => {
     };
     
     let frame = 0;
-    const duration = audio.duration || 3;
+    const duration = audioBuffer.duration;
     const totalFrames = Math.floor(duration * 30);
     
     const animate = () => {
       if (frame >= totalFrames) {
         recorder.stop();
-        audio.pause();
+        source.stop();
         return;
       }
       
@@ -241,6 +272,11 @@ const VoxKey = () => {
       }
       ctx.stroke();
       
+      // Mouth outline
+      ctx.strokeStyle = '#00FFFF';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(380, headY + 325, 320, 50);
+      
       // Cipher text
       ctx.fillStyle = '#00FFFF';
       ctx.font = '20px monospace';
@@ -269,7 +305,7 @@ const VoxKey = () => {
     };
     
     recorder.start();
-    audio.play();
+    source.start();
     animate();
   };
 
