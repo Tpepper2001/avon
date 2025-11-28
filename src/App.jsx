@@ -43,6 +43,17 @@ const VoxKey = () => {
     }
   }, [db.currentUser]);
 
+  useEffect(() => {
+    // Check if URL contains a VoxKey
+    const path = window.location.pathname;
+    const match = path.match(/\/(VX-[A-Z0-9]{4})/);
+    if (match) {
+      const key = match[1];
+      setSenderKey(key);
+      setView('landing');
+    }
+  }, []);
+
   const loadMessages = () => {
     if (db.currentUser) {
       const userMessages = db.messages.filter(m => m.recipientKey === db.currentUser.voxKey);
@@ -311,118 +322,177 @@ const VoxKey = () => {
           </div>
           
           <div className="space-y-4">
-            <div className="border-2 border-cyan-400 p-6 space-y-4">
-              <h2 className="text-xl font-bold text-center">{db.currentUser ? 'SEND MESSAGE' : 'ACCESS TERMINAL'}</h2>
-              
-              {!db.currentUser ? (
-                <>
-                  <input
-                    type="email"
-                    placeholder="EMAIL"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                  />
-                  {!db.users.find(u => u.email === email) && (
-                    <input
-                      type="text"
-                      placeholder="USERNAME"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
+            {senderKey ? (
+              // Sending mode (when VoxKey is in URL)
+              <div className="border-2 border-cyan-400 p-6 space-y-4">
+                <h2 className="text-xl font-bold text-center">SEND TO {senderKey}</h2>
+                <p className="text-xs text-center text-cyan-300">ANONYMOUS • NO ACCOUNT REQUIRED</p>
+                
+                {!audioBlob && !videoUrl && (
+                  <button
+                    onMouseDown={startRecording}
+                    onMouseUp={stopRecording}
+                    onTouchStart={startRecording}
+                    onTouchEnd={stopRecording}
+                    className={`w-full p-8 border-2 font-bold transition-all ${
+                      recording 
+                        ? 'bg-red-500 border-red-500 text-white animate-pulse' 
+                        : 'border-cyan-400 text-cyan-400 hover:bg-cyan-400 hover:text-black'
+                    }`}
+                  >
+                    <Mic className="w-12 h-12 mx-auto mb-2" />
+                    {recording ? 'RECORDING...' : 'HOLD TO RECORD'}
+                  </button>
+                )}
+                
+                {audioBlob && !videoUrl && !processing && (
+                  <button
+                    onClick={() => generateRobotVideo(audioBlob)}
+                    className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
+                  >
+                    GENERATE VOXCAST
+                  </button>
+                )}
+                
+                {processing && (
+                  <div className="text-center py-8 space-y-2">
+                    <div className="text-2xl animate-pulse">PROCESSING...</div>
+                    <div className="text-xs">APPLYING ROBOTIC DISTORTION</div>
+                  </div>
+                )}
+                
+                {videoUrl && (
+                  <div className="space-y-4">
+                    <video
+                      src={videoUrl}
+                      controls
+                      className="w-full border-2 border-cyan-400"
                     />
-                  )}
-                  <input
-                    type="password"
-                    placeholder="PASSWORD"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                  />
-                  <div className="flex gap-2">
                     <button
-                      onClick={handleSignup}
-                      className="flex-1 bg-cyan-400 text-black p-3 font-bold hover:bg-cyan-300 transition-colors"
+                      onClick={handleTransmit}
+                      className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors flex items-center justify-center gap-2"
                     >
-                      SIGN UP
-                    </button>
-                    <button
-                      onClick={handleLogin}
-                      className="flex-1 border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
-                    >
-                      LOGIN
+                      <Send className="w-5 h-5" />
+                      TRANSMIT VOXCAST
                     </button>
                   </div>
-                </>
-              ) : (
-                <>
-                  <input
-                    type="text"
-                    placeholder="RECIPIENT VOXKEY (VX-XXXX)"
-                    value={senderKey}
-                    onChange={(e) => setSenderKey(e.target.value)}
-                    className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300 uppercase"
-                  />
-                  
-                  {!audioBlob && !videoUrl && (
-                    <button
-                      onMouseDown={startRecording}
-                      onMouseUp={stopRecording}
-                      onTouchStart={startRecording}
-                      onTouchEnd={stopRecording}
-                      className={`w-full p-8 border-2 font-bold transition-all ${
-                        recording 
-                          ? 'bg-red-500 border-red-500 text-white animate-pulse' 
-                          : 'border-cyan-400 text-cyan-400 hover:bg-cyan-400 hover:text-black'
-                      }`}
-                    >
-                      <Mic className="w-12 h-12 mx-auto mb-2" />
-                      {recording ? 'RECORDING...' : 'HOLD TO RECORD'}
-                    </button>
-                  )}
-                  
-                  {audioBlob && !videoUrl && !processing && (
-                    <button
-                      onClick={() => generateRobotVideo(audioBlob)}
-                      className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
-                    >
-                      GENERATE VOXCAST
-                    </button>
-                  )}
-                  
-                  {processing && (
-                    <div className="text-center py-8 space-y-2">
-                      <div className="text-2xl animate-pulse">PROCESSING...</div>
-                      <div className="text-xs">APPLYING ROBOTIC DISTORTION</div>
-                    </div>
-                  )}
-                  
-                  {videoUrl && (
-                    <div className="space-y-4">
-                      <video
-                        src={videoUrl}
-                        controls
-                        className="w-full border-2 border-cyan-400"
+                )}
+              </div>
+            ) : (
+              // Login/Signup mode (no VoxKey in URL)
+              <div className="border-2 border-cyan-400 p-6 space-y-4">
+                <h2 className="text-xl font-bold text-center">{db.currentUser ? 'SEND MESSAGE' : 'ACCESS TERMINAL'}</h2>
+                
+                {!db.currentUser ? (
+                  <>
+                    <input
+                      type="email"
+                      placeholder="EMAIL"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
+                    />
+                    {!db.users.find(u => u.email === email) && (
+                      <input
+                        type="text"
+                        placeholder="USERNAME"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
                       />
+                    )}
+                    <input
+                      type="password"
+                      placeholder="PASSWORD"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
+                    />
+                    <div className="flex gap-2">
                       <button
-                        onClick={handleTransmit}
-                        className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors flex items-center justify-center gap-2"
+                        onClick={handleSignup}
+                        className="flex-1 bg-cyan-400 text-black p-3 font-bold hover:bg-cyan-300 transition-colors"
                       >
-                        <Send className="w-5 h-5" />
-                        TRANSMIT VOXCAST
+                        SIGN UP
+                      </button>
+                      <button
+                        onClick={handleLogin}
+                        className="flex-1 border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
+                      >
+                        LOGIN
                       </button>
                     </div>
-                  )}
-                  
-                  <button
-                    onClick={() => setView('inbox')}
-                    className="w-full border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
-                  >
-                    VIEW INBOX
-                  </button>
-                </>
-              )}
-            </div>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      placeholder="RECIPIENT VOXKEY (VX-XXXX)"
+                      value={senderKey}
+                      onChange={(e) => setSenderKey(e.target.value)}
+                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300 uppercase"
+                    />
+                    
+                    {!audioBlob && !videoUrl && (
+                      <button
+                        onMouseDown={startRecording}
+                        onMouseUp={stopRecording}
+                        onTouchStart={startRecording}
+                        onTouchEnd={stopRecording}
+                        className={`w-full p-8 border-2 font-bold transition-all ${
+                          recording 
+                            ? 'bg-red-500 border-red-500 text-white animate-pulse' 
+                            : 'border-cyan-400 text-cyan-400 hover:bg-cyan-400 hover:text-black'
+                        }`}
+                      >
+                        <Mic className="w-12 h-12 mx-auto mb-2" />
+                        {recording ? 'RECORDING...' : 'HOLD TO RECORD'}
+                      </button>
+                    )}
+                    
+                    {audioBlob && !videoUrl && !processing && (
+                      <button
+                        onClick={() => generateRobotVideo(audioBlob)}
+                        className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
+                      >
+                        GENERATE VOXCAST
+                      </button>
+                    )}
+                    
+                    {processing && (
+                      <div className="text-center py-8 space-y-2">
+                        <div className="text-2xl animate-pulse">PROCESSING...</div>
+                        <div className="text-xs">APPLYING ROBOTIC DISTORTION</div>
+                      </div>
+                    )}
+                    
+                    {videoUrl && (
+                      <div className="space-y-4">
+                        <video
+                          src={videoUrl}
+                          controls
+                          className="w-full border-2 border-cyan-400"
+                        />
+                        <button
+                          onClick={handleTransmit}
+                          className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <Send className="w-5 h-5" />
+                          TRANSMIT VOXCAST
+                        </button>
+                      </div>
+                    )}
+                    
+                    <button
+                      onClick={() => setView('inbox')}
+                      className="w-full border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
+                    >
+                      VIEW INBOX
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
