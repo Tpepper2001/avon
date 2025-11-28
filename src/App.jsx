@@ -536,17 +536,18 @@ export default function App() {
 
   if (view === 'record') {
     const sendMessage = () => {
-      if (!previewVideo.url) return;
-      mockDB.saveMessage(targetUsername, {
-        id: Date.now().toString(),
-        text: transcript || 'Voice Message',
-        timestamp: new Date().toISOString(),
-        duration: recordingTime,
-        videoUrl: previewVideo.url,
-        mimeType: previewVideo.mimeType
-      });
-      setView('success');
-    };
+  if (!previewVideo.url) return;
+  mockDB.saveMessage(user.username, {    // ← Change from targetUsername to user.username
+    id: Date.now().toString(),
+    text: transcript || 'Voice Message',
+    timestamp: new Date().toISOString(),
+    duration: recordingTime,
+    videoUrl: previewVideo.url,
+    mimeType: previewVideo.mimeType
+  });
+  setView('success');
+};
+
 
     const togglePreviewPlay = () => {
         if (!previewAudioRef.current) {
