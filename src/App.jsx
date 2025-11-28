@@ -36,13 +36,30 @@ const mockDB = {
     const key = `messages_${username}`;
     const msgs = JSON.parse(localStorage.getItem(key) || '[]');
     msgs.push(msg);
-    localStorage.setItem(key, JSON.stringify(msgs));
+    try {
+      localStorage.setItem(key, JSON.stringify(msgs));
+    } catch (e) {
+      if (e.name === 'QuotaExceededError') {
+        throw new Error('Inbox full. LocalStorage limit reached.');
+      }
+      throw e;
+    }
   },
   getMessages: (username) => JSON.parse(localStorage.getItem(`messages_${username}`) || '[]')
 };
 
 // ----------------------------- Helper utilities -----------------------------
 const formatTime = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+
+// NEW: Helper to convert Blob to Base64 for persistent storage
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
 
 function wrapTextByWords(text, maxCharsPerLine = 16) {
   const words = text.split(/\s+/);
@@ -67,19 +84,15 @@ function wrapTextByWords(text, maxCharsPerLine = 16) {
   return lines;
 }
 
-// Optimized for Mobile compatibility
 const getSupportedMimeType = () => {
   const types = [
-    'video/mp4', // iOS 14.8+ supports this in MediaRecorder
-    'video/webm;codecs=vp8', // Android Standard
-    'video/webm',
-    'video/mp4;codecs=h264', // iOS Preferred
-    'video/mp4;codecs=avc1'
+    'video/mp4', 'video/webm;codecs=vp8', 'video/webm',
+    'video/mp4;codecs=h264', 'video/mp4;codecs=avc1'
   ];
   for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
-  return ''; // Let browser choose default
+  return '';
 };
 
 // ------------------------------ Main App ------------------------------------
@@ -114,7 +127,6 @@ export default function App() {
   const audioContextRef = useRef(null);
   const previewAudioRef = useRef(null);
 
-  // Mobile Viewport Hack
   useEffect(() => {
     const handleResize = () => setViewportHeight(`${window.innerHeight}px`);
     window.addEventListener('resize', handleResize);
@@ -156,19 +168,13 @@ export default function App() {
     setAudioBlob(null);
 
     try {
-      // Constraints for mobile compatibility
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true,
-          sampleRate: 44100 
-        } 
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 44100 } 
       });
       
       audioChunksRef.current = [];
       setTranscript('');
 
-      // Prefer standard webm for audio recording container
       const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
       const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
@@ -178,13 +184,10 @@ export default function App() {
         const blob = new Blob(audioChunksRef.current, { type: options?.mimeType || 'audio/webm' });
         setAudioBlob(blob);
         audioUrlRef.current = URL.createObjectURL(blob);
-        
-        // Stop all tracks to release microphone on mobile
         stream.getTracks().forEach(track => track.stop());
       };
       recorder.start();
 
-      // Speech Recognition (Best Effort on Mobile)
       try {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SR) {
@@ -229,11 +232,9 @@ export default function App() {
     setRecordingTime(0);
   };
 
-  // ----------------- Video Generation (Mobile Optimized) -----------------
+  // ----------------- Video Generation -----------------
   const generatePreview = async () => {
     if (!audioBlob) return alert('No audio recorded.');
-
-    // Check if canvas capture is supported (Older iOS doesn't support this)
     if (!canvasRef.current.captureStream) {
         alert("Your browser does not support video generation. Please try Chrome on Android or Desktop.");
         return;
@@ -242,12 +243,10 @@ export default function App() {
     setProcessing(true);
     setPreviewVideo({ url: '', mimeType: '' });
     
-    // Lower resolution for Mobile Performance
     const canvas = canvasRef.current;
     canvas.width = 720; 
     canvas.height = 1280;
     const ctx = canvas.getContext('2d', { alpha: false });
-
     const textToSpeak = transcript || "Audio message";
     
     if (audioContextRef.current) {
@@ -260,8 +259,6 @@ export default function App() {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContext();
       audioContextRef.current = audioCtx;
-      
-      // Crucial for Mobile: Resume context
       if (audioCtx.state === 'suspended') await audioCtx.resume();
 
       const arrayBuffer = await audioBlob.arrayBuffer();
@@ -269,14 +266,11 @@ export default function App() {
       
       source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
+      source.playbackRate.value = 0.85; 
       
-      // --- LIGHTWEIGHT VOICE MORPHING (Mobile Safe) ---
-      source.playbackRate.value = 0.85; // Slight pitch down
-      
-      // Simple distortion
       const distortion = audioCtx.createWaveShaper();
-      distortion.curve = makeDistortionCurve(20); // Less distortion for clarity
-      distortion.oversample = 'none'; // '4x' kills mobile CPU
+      distortion.curve = makeDistortionCurve(20);
+      distortion.oversample = 'none';
       
       const filter = audioCtx.createBiquadFilter();
       filter.type = 'lowpass';
@@ -286,7 +280,7 @@ export default function App() {
       gainNode.gain.value = 2.0;
       
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256; // Smaller FFT size for performance
+      analyser.fftSize = 256; 
       
       const dest = audioCtx.createMediaStreamDestination();
       
@@ -295,13 +289,11 @@ export default function App() {
       distortion.connect(gainNode);
       gainNode.connect(analyser);
       analyser.connect(dest);
-      // Connect to destination so user can hear process (optional, helps keep audio active)
       analyser.connect(audioCtx.destination); 
       
       source.start(0);
       
-      // Video Recording Setup
-      const canvasStream = canvas.captureStream(30); // 30 FPS is enough for mobile
+      const canvasStream = canvas.captureStream(30);
       const combined = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...dest.stream.getAudioTracks()
@@ -309,17 +301,15 @@ export default function App() {
 
       const mimeType = getSupportedMimeType();
       
-      // Lower bitrate for mobile stability
       const recorderOptions = {
         mimeType: mimeType || undefined,
-        videoBitsPerSecond: 1500000, // 1.5 Mbps
+        videoBitsPerSecond: 1500000, 
         audioBitsPerSecond: 128000
       };
 
       try {
         recorder = new MediaRecorder(combined, recorderOptions);
       } catch (e) {
-        // Fallback if options fail
         recorder = new MediaRecorder(combined);
       }
 
@@ -329,7 +319,6 @@ export default function App() {
       recorder.onstop = () => {
         const blob = new Blob(videoChunks, { type: recorder.mimeType });
         if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
-        
         const url = URL.createObjectURL(blob);
         videoUrlRef.current = url;
         setPreviewVideo({ url, mimeType: recorder.mimeType });
@@ -338,7 +327,6 @@ export default function App() {
 
       recorder.start();
 
-      // --- VISUALIZATION LOOP ---
       const words = textToSpeak.split(/\s+/).filter(w => w.length > 0);
       const startTime = performance.now();
       const audioDuration = (audioBuffer.duration / source.playbackRate.value) * 1000 + 500;
@@ -352,11 +340,9 @@ export default function App() {
         analyser.getByteFrequencyData(dataArray);
         const avgVolume = dataArray.reduce((a, b) => a + b) / dataArray.length / 255;
 
-        // Simplified Drawing for Mobile Performance
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Robot Head
         const cx = canvas.width / 2;
         const cy = 400;
         
@@ -365,19 +351,17 @@ export default function App() {
         ctx.arc(cx, cy, 150, 0, Math.PI * 2);
         ctx.fill();
         
-        // Eyes (Simple)
         const eyeGlow = 10 + avgVolume * 20;
         ctx.fillStyle = '#00ff7f';
         ctx.shadowBlur = eyeGlow;
         ctx.shadowColor = '#00ff7f';
         
         ctx.beginPath();
-        ctx.arc(cx - 50, cy - 20, 30, 0, Math.PI * 2); // Left
-        ctx.arc(cx + 50, cy - 20, 30, 0, Math.PI * 2); // Right
+        ctx.arc(cx - 50, cy - 20, 30, 0, Math.PI * 2);
+        ctx.arc(cx + 50, cy - 20, 30, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0; // Reset expensive shadow
+        ctx.shadowBlur = 0;
 
-        // Mouth (Waveform)
         ctx.strokeStyle = '#00ff7f';
         ctx.lineWidth = 4;
         ctx.beginPath();
@@ -386,12 +370,10 @@ export default function App() {
         const startY = cy + 60;
         
         ctx.moveTo(startX, startY);
-        // Simple 3-point mouth movement
         ctx.lineTo(cx, startY + (avgVolume * 50)); 
         ctx.lineTo(startX + mouthWidth, startY);
         ctx.stroke();
 
-        // Text (Large & Centered)
         ctx.font = 'bold 40px monospace';
         ctx.fillStyle = '#00ff7f';
         ctx.textAlign = 'center';
@@ -403,7 +385,6 @@ export default function App() {
           ctx.fillText(line, cx, 700 + i * 50);
         });
 
-        // Progress Bar
         ctx.fillStyle = '#333';
         ctx.fillRect(50, 1100, canvas.width - 100, 10);
         ctx.fillStyle = '#00ff7f';
@@ -443,7 +424,10 @@ export default function App() {
   const shareVideoFile = async (videoUrl, type) => {
     if (!videoUrl) return;
     try {
-      const blob = await fetch(videoUrl).then(r => r.blob());
+      // If base64, we need to convert back to blob for sharing/downloading
+      const res = await fetch(videoUrl);
+      const blob = await res.blob();
+      
       const ext = type && type.includes('mp4') ? 'mp4' : 'webm';
       const file = new File([blob], `voiceanon_${Date.now()}.${ext}`, { type: blob.type });
 
@@ -451,7 +435,7 @@ export default function App() {
         await navigator.share({ files: [file] });
       } else {
         const a = document.createElement('a');
-        a.href = videoUrl;
+        a.href = URL.createObjectURL(blob);
         a.download = file.name;
         document.body.appendChild(a);
         a.click();
@@ -535,19 +519,37 @@ export default function App() {
   }
 
   if (view === 'record') {
-    const sendMessage = () => {
-  if (!previewVideo.url) return;
-  mockDB.saveMessage(user.username, {    // ← Change from targetUsername to user.username
-    id: Date.now().toString(),
-    text: transcript || 'Voice Message',
-    timestamp: new Date().toISOString(),
-    duration: recordingTime,
-    videoUrl: previewVideo.url,
-    mimeType: previewVideo.mimeType
-  });
-  setView('success');
-};
+    // MODIFIED: Converts Blob to Base64 to survive page reloads/view changes in LocalStorage
+    const sendMessage = async () => {
+      if (!previewVideo.url) return;
+      
+      // If we are in testing mode (not on a /u/ link), send to self
+      const recipient = targetUsername || user?.username;
+      if (!recipient) return alert("No recipient specified");
 
+      try {
+        setProcessing(true);
+        const response = await fetch(previewVideo.url);
+        const blob = await response.blob();
+        const base64Data = await blobToBase64(blob);
+
+        mockDB.saveMessage(recipient, {
+          id: Date.now().toString(),
+          text: transcript || 'Voice Message',
+          timestamp: new Date().toISOString(),
+          duration: recordingTime,
+          videoUrl: base64Data, // Saving Actual Data
+          mimeType: previewVideo.mimeType
+        });
+        setProcessing(false);
+        setView('success');
+      } catch (err) {
+        setProcessing(false);
+        console.error(err);
+        if (err.message.includes('Limit')) alert('Inbox is full (Browser Limit). Clear messages.');
+        else alert('Failed to send. Video might be too large.');
+      }
+    };
 
     const togglePreviewPlay = () => {
         if (!previewAudioRef.current) {
@@ -570,12 +572,14 @@ export default function App() {
         {/* Header */}
         <div className="bg-[#202c33] p-3 flex items-center gap-3 shadow-md z-10 shrink-0">
             <div className="w-8 h-8 rounded-full bg-gray-500 flex items-center justify-center text-white font-bold">
-                {targetUsername ? targetUsername[0].toUpperCase() : '?'}
+                {(targetUsername || user?.username || '?')[0].toUpperCase()}
             </div>
             <div>
-                <h2 className="text-white font-bold text-sm">@{targetUsername}</h2>
+                <h2 className="text-white font-bold text-sm">@{targetUsername || user?.username || 'You'}</h2>
                 <p className="text-[10px] text-gray-400">Encrypting...</p>
             </div>
+            {/* Allow exit if in self-test mode */}
+            {!targetUsername && <button onClick={() => setView('dashboard')} className="ml-auto text-gray-400"><X /></button>}
         </div>
 
         {/* Main Content Area */}
@@ -594,7 +598,11 @@ export default function App() {
                     />
                     <div className="flex justify-between items-center mt-3 px-2">
                          <button onClick={() => { setPreviewVideo({url:'', mimeType:''}); setProcessing(false); }} className="p-2 text-red-400"><Trash2 size={24} /></button>
-                         <button onClick={sendMessage} className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white shadow-lg"><Send size={24} /></button>
+                         {processing ? (
+                            <div className="text-green-500 text-xs">Processing...</div>
+                         ) : (
+                            <button onClick={sendMessage} className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white shadow-lg"><Send size={24} /></button>
+                         )}
                     </div>
                 </div>
             ) : processing ? (
@@ -603,7 +611,6 @@ export default function App() {
                     <p className="text-[#00a884] font-mono text-sm animate-pulse">ENCRYPTING VOICE DATA...</p>
                 </div>
             ) : audioBlob ? (
-                // Post-Recording Review UI
                  <div className="w-full max-w-sm animate-slide-up">
                      <div className="bg-[#005c4b] p-4 rounded-lg shadow-xl mb-4 relative">
                          <div className="flex items-center gap-4">
@@ -628,7 +635,6 @@ export default function App() {
                      </div>
                  </div>
             ) : (
-                // Idle Hints
                 <div className="text-center opacity-50">
                     <Mic className="w-12 h-12 text-white mx-auto mb-2 opacity-50" />
                     <p className="text-gray-400 text-xs">Tap mic to record</p>
@@ -636,7 +642,6 @@ export default function App() {
             )}
         </div>
 
-        {/* Bottom Bar - Only visible when not reviewing/processing */}
         {!audioBlob && !processing && !previewVideo.url && (
             <div className="w-full bg-[#202c33] px-2 py-3 flex items-center justify-between gap-2 shrink-0 pb-safe">
                 {isRecording ? (
