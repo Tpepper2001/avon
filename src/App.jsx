@@ -67,6 +67,8 @@ const VoxKey = () => {
       db.currentUser = user;
       setVoxKey(user.voxKey);
       setView('inbox');
+    } else {
+      alert('Invalid credentials');
     }
   };
 
@@ -289,7 +291,8 @@ const VoxKey = () => {
   };
 
   const copyLink = () => {
-    navigator.clipboard.writeText(`/key/${voxKey}`);
+    const fullUrl = `${window.location.origin}/${voxKey}`;
+    navigator.clipboard.writeText(fullUrl);
     alert('Link copied!');
   };
 
@@ -446,8 +449,8 @@ const VoxKey = () => {
           <div className="border-2 border-cyan-400 p-4 space-y-2">
             <p className="text-sm">YOUR VOXKEY:</p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 bg-cyan-400 text-black p-3 text-xl font-bold">
-                voxkey.com/key/{voxKey}
+              <code className="flex-1 bg-cyan-400 text-black p-3 text-lg font-bold break-all">
+                {window.location.host}/{voxKey}
               </code>
               <button
                 onClick={copyLink}
