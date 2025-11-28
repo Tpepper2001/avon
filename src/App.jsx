@@ -130,6 +130,8 @@ const VoxKey = () => {
     const ctx = canvas.getContext('2d');
     
     const audio = new Audio(URL.createObjectURL(audioBlob));
+    await audio.load();
+    
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const source = audioContext.createMediaElementSource(audio);
     const analyser = audioContext.createAnalyser();
@@ -161,7 +163,7 @@ const VoxKey = () => {
     
     const chunks = [];
     const stream = canvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
     
     recorder.ondataavailable = (e) => chunks.push(e.data);
     recorder.onstop = () => {
@@ -169,15 +171,15 @@ const VoxKey = () => {
       const url = URL.createObjectURL(blob);
       setVideoUrl(url);
       setProcessing(false);
+      audioContext.close();
     };
     
     let frame = 0;
-    const duration = await new Promise(resolve => {
-      audio.onloadedmetadata = () => resolve(audio.duration);
-    });
+    const duration = audio.duration || 3;
+    const totalFrames = Math.floor(duration * 30);
     
     const animate = () => {
-      if (frame / 30 >= duration) {
+      if (frame >= totalFrames) {
         recorder.stop();
         audio.pause();
         return;
@@ -249,7 +251,7 @@ const VoxKey = () => {
       ctx.fillText(cipherText.slice(20), 340, headY - 20);
       
       // Progress bar
-      const progress = frame / 30 / duration;
+      const progress = frame / totalFrames;
       ctx.fillStyle = '#00FFFF';
       ctx.fillRect(200, 1700, 680 * progress, 30);
       ctx.strokeStyle = '#00FFFF';
@@ -274,15 +276,16 @@ const VoxKey = () => {
   const handleTransmit = () => {
     if (!videoUrl || !senderKey) return;
     
-    const recipient = db.users.find(u => u.voxKey === senderKey.toUpperCase());
+    const recipientKey = senderKey.toUpperCase().trim();
+    const recipient = db.users.find(u => u.voxKey === recipientKey);
     if (!recipient) {
-      alert('Invalid VoxKey');
+      alert('Invalid VoxKey - user not found');
       return;
     }
     
     const message = {
       id: Date.now(),
-      recipientKey: senderKey.toUpperCase(),
+      recipientKey: recipientKey,
       videoUrl,
       transcript: '[Voice message received]',
       timestamp: Date.now()
@@ -366,6 +369,8 @@ const VoxKey = () => {
                     <video
                       src={videoUrl}
                       controls
+                      autoPlay
+                      playsInline
                       className="w-full border-2 border-cyan-400"
                     />
                     <button
