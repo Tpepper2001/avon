@@ -1,11 +1,54 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Send, Trash2, Download, Share2, Copy, LogOut, Volume2 } from 'lucide-react';
 
-// In-memory database
+// Persistent database using window.storage
 const db = {
-  users: [],
-  messages: [],
-  currentUser: null
+  async getUsers() {
+    try {
+      const result = await window.storage.get('voxkey_users');
+      return result ? JSON.parse(result.value) : [];
+    } catch {
+      return [];
+    }
+  },
+  
+  async addUser(user) {
+    const users = await this.getUsers();
+    users.push(user);
+    await window.storage.set('voxkey_users', JSON.stringify(users));
+    return user;
+  },
+  
+  async findUser(email, password) {
+    const users = await this.getUsers();
+    return users.find(u => u.email === email && u.password === password);
+  },
+  
+  async findUserByKey(voxKey) {
+    const users = await this.getUsers();
+    return users.find(u => u.voxKey === voxKey);
+  },
+  
+  async getMessages(voxKey) {
+    try {
+      const result = await window.storage.get(`messages_${voxKey}`);
+      return result ? JSON.parse(result.value) : [];
+    } catch {
+      return [];
+    }
+  },
+  
+  async addMessage(message) {
+    const messages = await this.getMessages(message.recipientKey);
+    messages.push(message);
+    await window.storage.set(`messages_${message.recipientKey}`, JSON.stringify(messages));
+  },
+  
+  async deleteMessage(voxKey, messageId) {
+    const messages = await this.getMessages(voxKey);
+    const filtered = messages.filter(m => m.id !== messageId);
+    await window.storage.set(`messages_${voxKey}`, JSON.stringify(filtered));
+  }
 };
 
 const generateVoxKey = () => {
@@ -23,6 +66,7 @@ const VoxKey = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [voxKey, setVoxKey] = useState('');
+  const [currentUser, setCurrentUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [recording, setRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
@@ -32,19 +76,16 @@ const VoxKey = () => {
   
   const mediaRecorder = useRef(null);
   const audioChunks = useRef([]);
-  const canvasRef = useRef(null);
-  const videoRef = useRef(null);
 
   useEffect(() => {
-    if (db.currentUser) {
+    if (currentUser) {
       loadMessages();
       const interval = setInterval(loadMessages, 1000);
       return () => clearInterval(interval);
     }
-  }, [db.currentUser]);
+  }, [currentUser]);
 
   useEffect(() => {
-    // Check if URL contains a VoxKey
     const path = window.location.pathname;
     const match = path.match(/\/(VX-[A-Z0-9]{4})/);
     if (match) {
@@ -54,34 +95,28 @@ const VoxKey = () => {
     }
   }, []);
 
-  // Debug: Log current users
-  useEffect(() => {
-    console.log('Current users in db:', db.users);
-    console.log('Looking for VoxKey:', senderKey);
-  }, [senderKey]);
-
-  const loadMessages = () => {
-    if (db.currentUser) {
-      const userMessages = db.messages.filter(m => m.recipientKey === db.currentUser.voxKey);
-      setMessages(userMessages.sort((a, b) => b.timestamp - a.timestamp));
+  const loadMessages = async () => {
+    if (currentUser) {
+      const msgs = await db.getMessages(currentUser.voxKey);
+      setMessages(msgs.sort((a, b) => b.timestamp - a.timestamp));
     }
   };
 
-  const handleSignup = () => {
+  const handleSignup = async () => {
     if (!email || !username || !password) return;
     const newKey = generateVoxKey();
     const user = { email, username, password, voxKey: newKey };
-    db.users.push(user);
-    db.currentUser = user;
+    await db.addUser(user);
+    setCurrentUser(user);
     setVoxKey(newKey);
     setView('inbox');
   };
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!email || !password) return;
-    const user = db.users.find(u => u.email === email && u.password === password);
+    const user = await db.findUser(email, password);
     if (user) {
-      db.currentUser = user;
+      setCurrentUser(user);
       setVoxKey(user.voxKey);
       setView('inbox');
     } else {
@@ -90,7 +125,7 @@ const VoxKey = () => {
   };
 
   const handleLogout = () => {
-    db.currentUser = null;
+    setCurrentUser(null);
     setView('landing');
     setEmail('');
     setPassword('');
@@ -130,190 +165,170 @@ const VoxKey = () => {
   const generateRobotVideo = async (audioBlob) => {
     setProcessing(true);
     
-    const canvas = document.createElement('canvas');
-    canvas.width = 1080;
-    canvas.height = 1920;
-    const ctx = canvas.getContext('2d');
-    
-    // Create audio element for playback
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
-    await audio.load();
-    
-    // Setup audio processing
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
-    // Decode the audio blob to get the buffer
-    const arrayBuffer = await audioBlob.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    
-    // Create buffer source for processing
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    
-    const analyser = audioContext.createAnalyser();
-    const distortion = audioContext.createWaveShaper();
-    const gainNode = audioContext.createGain();
-    const destination = audioContext.createMediaStreamDestination();
-    
-    // Heavy distortion curve
-    const makeDistortionCurve = (amount = 50) => {
-      const samples = 44100;
-      const curve = new Float32Array(samples);
-      const deg = Math.PI / 180;
-      for (let i = 0; i < samples; i++) {
-        const x = (i * 2) / samples - 1;
-        curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
-      }
-      return curve;
-    };
-    
-    distortion.curve = makeDistortionCurve(80);
-    distortion.oversample = '4x';
-    analyser.fftSize = 256;
-    gainNode.gain.value = 1.5;
-    
-    // Connect audio nodes
-    source.connect(distortion);
-    distortion.connect(gainNode);
-    gainNode.connect(analyser);
-    analyser.connect(destination);
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    // Setup video recording with audio from destination
-    const videoChunks = [];
-    const videoStream = canvas.captureStream(30);
-    const audioTracks = destination.stream.getAudioTracks();
-    audioTracks.forEach(track => videoStream.addTrack(track));
-    
-    const recorder = new MediaRecorder(videoStream, { 
-      mimeType: 'video/webm;codecs=vp8,opus',
-      audioBitsPerSecond: 128000
-    });
-    
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) videoChunks.push(e.data);
-    };
-    
-    recorder.onstop = () => {
-      const blob = new Blob(videoChunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      setVideoUrl(url);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const ctx = canvas.getContext('2d');
+      
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      
+      const distortion = audioContext.createWaveShaper();
+      const makeDistortionCurve = (amount = 50) => {
+        const samples = 44100;
+        const curve = new Float32Array(samples);
+        const deg = Math.PI / 180;
+        for (let i = 0; i < samples; i++) {
+          const x = (i * 2) / samples - 1;
+          curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+        }
+        return curve;
+      };
+      distortion.curve = makeDistortionCurve(80);
+      distortion.oversample = '4x';
+      
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.5;
+      
+      const destination = audioContext.createMediaStreamDestination();
+      
+      source.connect(distortion);
+      distortion.connect(gainNode);
+      gainNode.connect(analyser);
+      analyser.connect(destination);
+      
+      const videoStream = canvas.captureStream(30);
+      destination.stream.getAudioTracks().forEach(track => videoStream.addTrack(track));
+      
+      const videoChunks = [];
+      const recorder = new MediaRecorder(videoStream, {
+        mimeType: 'video/webm',
+        videoBitsPerSecond: 2500000
+      });
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) videoChunks.push(e.data);
+      };
+      
+      recorder.onstop = () => {
+        const blob = new Blob(videoChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        setVideoUrl(url);
+        setProcessing(false);
+      };
+      
+      let frame = 0;
+      const duration = audioBuffer.duration;
+      const totalFrames = Math.floor(duration * 30);
+      
+      const animate = () => {
+        if (frame >= totalFrames) {
+          recorder.stop();
+          source.stop();
+          setTimeout(() => audioContext.close(), 100);
+          return;
+        }
+        
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+        const intensity = average / 255;
+        
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.strokeStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.2})`;
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 10; i++) {
+          ctx.beginPath();
+          ctx.moveTo(0, i * 192);
+          ctx.lineTo(canvas.width, i * 192);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(i * 108, 0);
+          ctx.lineTo(i * 108, canvas.height);
+          ctx.stroke();
+        }
+        
+        const headY = 600 + Math.sin(frame / 10) * 20;
+        ctx.strokeStyle = '#00FFFF';
+        ctx.fillStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.3})`;
+        ctx.lineWidth = 4;
+        
+        ctx.beginPath();
+        ctx.roundRect(340, headY, 400, 500, 20);
+        ctx.fill();
+        ctx.stroke();
+        
+        const eyeGlow = 100 + intensity * 155;
+        ctx.fillStyle = `rgb(0, ${eyeGlow}, ${eyeGlow})`;
+        ctx.beginPath();
+        ctx.ellipse(440, headY + 150, 40, 50, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(640, headY + 150, 40, 50, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.strokeStyle = '#00FFFF';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        for (let i = 0; i < bufferLength; i++) {
+          const x = 380 + (i / bufferLength) * 320;
+          const y = headY + 350 + (dataArray[i] / 255) * 50 - 25;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        
+        ctx.fillStyle = '#00FFFF';
+        ctx.font = '20px monospace';
+        const cipherText = Array(40).fill(0).map(() => 
+          String.fromCharCode(33 + Math.floor(Math.random() * 94))
+        ).join('');
+        ctx.fillText(cipherText.slice(0, 20), 340, headY - 50);
+        ctx.fillText(cipherText.slice(20), 340, headY - 20);
+        
+        const progress = frame / totalFrames;
+        ctx.fillStyle = '#00FFFF';
+        ctx.fillRect(200, 1700, 680 * progress, 30);
+        ctx.strokeStyle = '#00FFFF';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(200, 1700, 680, 30);
+        
+        ctx.fillStyle = '#00FFFF';
+        ctx.font = '24px monospace';
+        const currentTime = (frame / 30).toFixed(1);
+        ctx.fillText(`${currentTime}s / ${duration.toFixed(1)}s`, 380, 1780);
+        
+        frame++;
+        requestAnimationFrame(animate);
+      };
+      
+      recorder.start();
+      source.start();
+      animate();
+      
+    } catch (err) {
+      console.error('Video generation error:', err);
+      alert('Error generating video. Please try again.');
       setProcessing(false);
-      audioContext.close();
-    };
-    
-    let frame = 0;
-    const duration = audioBuffer.duration;
-    const totalFrames = Math.floor(duration * 30);
-    
-    const animate = () => {
-      if (frame >= totalFrames) {
-        recorder.stop();
-        source.stop();
-        return;
-      }
-      
-      analyser.getByteFrequencyData(dataArray);
-      const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-      const intensity = average / 255;
-      
-      // Background
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      // Grid
-      ctx.strokeStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.2})`;
-      ctx.lineWidth = 2;
-      for (let i = 0; i < 10; i++) {
-        ctx.beginPath();
-        ctx.moveTo(0, i * 192);
-        ctx.lineTo(canvas.width, i * 192);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(i * 108, 0);
-        ctx.lineTo(i * 108, canvas.height);
-        ctx.stroke();
-      }
-      
-      // Robot head
-      const headY = 600 + Math.sin(frame / 10) * 20;
-      ctx.strokeStyle = '#00FFFF';
-      ctx.fillStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.3})`;
-      ctx.lineWidth = 4;
-      
-      // Head outline
-      ctx.beginPath();
-      ctx.roundRect(340, headY, 400, 500, 20);
-      ctx.fill();
-      ctx.stroke();
-      
-      // Eyes
-      const eyeGlow = 100 + intensity * 155;
-      ctx.fillStyle = `rgb(0, ${eyeGlow}, ${eyeGlow})`;
-      ctx.beginPath();
-      ctx.ellipse(440, headY + 150, 40, 50, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(640, headY + 150, 40, 50, 0, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Mouth waveform
-      ctx.strokeStyle = '#00FFFF';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      for (let i = 0; i < bufferLength; i++) {
-        const x = 380 + (i / bufferLength) * 320;
-        const y = headY + 350 + (dataArray[i] / 255) * 50 - 25;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      
-      // Mouth outline
-      ctx.strokeStyle = '#00FFFF';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(380, headY + 325, 320, 50);
-      
-      // Cipher text
-      ctx.fillStyle = '#00FFFF';
-      ctx.font = '20px monospace';
-      const cipherText = Array(40).fill(0).map(() => 
-        String.fromCharCode(33 + Math.floor(Math.random() * 94))
-      ).join('');
-      ctx.fillText(cipherText.slice(0, 20), 340, headY - 50);
-      ctx.fillText(cipherText.slice(20), 340, headY - 20);
-      
-      // Progress bar
-      const progress = frame / totalFrames;
-      ctx.fillStyle = '#00FFFF';
-      ctx.fillRect(200, 1700, 680 * progress, 30);
-      ctx.strokeStyle = '#00FFFF';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(200, 1700, 680, 30);
-      
-      // Time
-      ctx.fillStyle = '#00FFFF';
-      ctx.font = '24px monospace';
-      const currentTime = (frame / 30).toFixed(1);
-      ctx.fillText(`${currentTime}s / ${duration.toFixed(1)}s`, 380, 1780);
-      
-      frame++;
-      requestAnimationFrame(animate);
-    };
-    
-    recorder.start();
-    source.start();
-    animate();
+    }
   };
 
-  const handleTransmit = () => {
+  const handleTransmit = async () => {
     if (!videoUrl || !senderKey) return;
     
     const recipientKey = senderKey.toUpperCase().trim();
-    const recipient = db.users.find(u => u.voxKey === recipientKey);
+    const recipient = await db.findUserByKey(recipientKey);
     if (!recipient) {
       alert('Invalid VoxKey - user not found');
       return;
@@ -327,7 +342,7 @@ const VoxKey = () => {
       timestamp: Date.now()
     };
     
-    db.messages.push(message);
+    await db.addMessage(message);
     alert('VoxCast transmitted! 🤖');
     setVideoUrl(null);
     setAudioBlob(null);
@@ -335,9 +350,11 @@ const VoxKey = () => {
     setView('landing');
   };
 
-  const deleteMessage = (id) => {
-    db.messages = db.messages.filter(m => m.id !== id);
-    loadMessages();
+  const deleteMessage = async (id) => {
+    if (currentUser) {
+      await db.deleteMessage(currentUser.voxKey, id);
+      loadMessages();
+    }
   };
 
   const copyLink = () => {
@@ -362,7 +379,6 @@ const VoxKey = () => {
           
           <div className="space-y-4">
             {senderKey ? (
-              // Sending mode (when VoxKey is in URL)
               <div className="border-2 border-cyan-400 p-6 space-y-4">
                 <h2 className="text-xl font-bold text-center">SEND TO {senderKey}</h2>
                 <p className="text-xs text-center text-cyan-300">ANONYMOUS • NO ACCOUNT REQUIRED</p>
@@ -420,11 +436,10 @@ const VoxKey = () => {
                 )}
               </div>
             ) : (
-              // Login/Signup mode (no VoxKey in URL)
               <div className="border-2 border-cyan-400 p-6 space-y-4">
-                <h2 className="text-xl font-bold text-center">{db.currentUser ? 'SEND MESSAGE' : 'ACCESS TERMINAL'}</h2>
+                <h2 className="text-xl font-bold text-center">{currentUser ? 'SEND MESSAGE' : 'ACCESS TERMINAL'}</h2>
                 
-                {!db.currentUser ? (
+                {!currentUser ? (
                   <>
                     <input
                       type="email"
@@ -433,15 +448,13 @@ const VoxKey = () => {
                       onChange={(e) => setEmail(e.target.value)}
                       className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
                     />
-                    {!db.users.find(u => u.email === email) && (
-                      <input
-                        type="text"
-                        placeholder="USERNAME"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                      />
-                    )}
+                    <input
+                      type="text"
+                      placeholder="USERNAME"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
+                    />
                     <input
                       type="password"
                       placeholder="PASSWORD"
@@ -512,6 +525,8 @@ const VoxKey = () => {
                         <video
                           src={videoUrl}
                           controls
+                          autoPlay
+                          playsInline
                           className="w-full border-2 border-cyan-400"
                         />
                         <button
@@ -547,7 +562,7 @@ const VoxKey = () => {
           <div className="flex items-center justify-between border-b-2 border-cyan-400 pb-4">
             <div>
               <h1 className="text-3xl font-bold">VOXKEY INBOX</h1>
-              <p className="text-sm text-cyan-300">USER: {db.currentUser.username}</p>
+              <p className="text-sm text-cyan-300">USER: {currentUser?.username}</p>
             </div>
             <button
               onClick={handleLogout}
