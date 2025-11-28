@@ -1,23 +1,17 @@
-// src/App.jsx — VoiceAnon v3.0 — 100% Pure JavaScript (No TS!)
-// Works perfectly on Vercel, Netlify, Vite, iOS, Android
-
+// src/App.jsx — VoiceAnon v3.1 — FINAL VERSION (Inbox Fixed!)
 import React, {
   useEffect,
   useRef,
   useState,
-  useCallback,
   useLayoutEffect,
 } from 'react';
 import {
   Mic,
-  Square,
   Download,
-  Share2,
   Copy,
   CheckCircle,
-  MessageSquare,
-  LogOut,
   Inbox,
+  LogOut,
   Play,
   Pause,
   Trash2,
@@ -28,7 +22,7 @@ import {
   User,
 } from 'lucide-react';
 
-// ==================== Secure Mock Auth (SHA-256 + UUID) ====================
+// ==================== Secure Mock Auth ====================
 const mockAuth = {
   currentUser: null,
 
@@ -69,11 +63,7 @@ const mockAuth = {
     users[email] = newUser;
     localStorage.setItem('va_users_v3', JSON.stringify(users));
 
-    this.currentUser = {
-      email: newUser.email,
-      username: newUser.username,
-      uid: newUser.uid,
-    };
+    this.currentUser = { email, username: newUser.username, uid: newUser.uid };
     localStorage.setItem('va_session', JSON.stringify(this.currentUser));
     return this.currentUser;
   },
@@ -93,7 +83,7 @@ const mockAuth = {
   },
 };
 
-// ==================== Safe Message Store ====================
+// ==================== Message DB ====================
 const MAX_VIDEO_BASE64 = 18 * 1024 * 1024;
 const MAX_MESSAGES = 50;
 
@@ -165,7 +155,6 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // Recording
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState(null);
@@ -174,13 +163,11 @@ export default function App() {
   const [previewVideo, setPreviewVideo] = useState(null);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
 
-  // Auth form
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUsername, setAuthUsername] = useState('');
   const [authError, setAuthError] = useState('');
 
-  // Refs
   const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -294,7 +281,7 @@ export default function App() {
     revokeAllObjectURLs();
   };
 
-  // ==================== Robot Video Generation ====================
+  // ==================== Generate Robot Video ====================
   const generatePreview = async () => {
     if (!audioBlob) return;
     setProcessing(true);
@@ -307,14 +294,10 @@ export default function App() {
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     audioContextRef.current = audioCtx;
-
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
 
     try {
       const audioBuffer = await audioCtx.decodeAudioData(await audioBlob.arrayBuffer());
-
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
 
@@ -325,12 +308,7 @@ export default function App() {
         const amount = 140;
         for (let i = 0; i < samples; i++) {
           const x = (i * 2) / samples - 1;
-          curve[i] =
-            (3 + amount) *
-            x *
-            20 *
-            (Math.PI / 180) /
-            (Math.PI + amount * Math.abs(x));
+          curve[i] = (3 + amount) * x * 20 * (Math.PI / 180) / (Math.PI + amount * Math.abs(x));
         }
         return curve;
       })();
@@ -338,22 +316,16 @@ export default function App() {
 
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
-
       const dest = audioCtx.createMediaStreamDestination();
 
       source.connect(distortion);
       distortion.connect(analyser);
       analyser.connect(dest);
       source.connect(dest);
-
       source.start();
 
       const videoStream = canvas.captureStream(30);
-      const combined = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks(),
-      ]);
-
+      const combined = new MediaStream([...videoStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
       const recorder = new MediaRecorder(combined, { mimeType: detectBestMime() });
       const chunks = [];
 
@@ -374,40 +346,21 @@ export default function App() {
       const draw = (now) => {
         const elapsed = now - startTime;
         const progress = Math.min(elapsed / duration, 1);
-
         analyser.getByteFrequencyData(dataArray);
         const volume = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
 
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, 720, 1280);
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 720, 1280);
+        ctx.strokeStyle = 'rgba(0, 255, 0, 0.07)'; ctx.lineWidth = 2;
+        for (let i = 0; i < 1280; i += 80) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(720, i); ctx.stroke(); }
 
-        ctx.strokeStyle = 'rgba(0, 255, 0, 0.07)';
-        ctx.lineWidth = 2;
-        for (let i = 0; i < 1280; i += 80) {
-          ctx.beginPath();
-          ctx.moveTo(0, i);
-          ctx.lineTo(720, i);
-          ctx.stroke();
-        }
+        const cx = 360, cy = 440;
+        ctx.fillStyle = '#0a0a0a'; ctx.fillRect(cx - 170, cy - 240, 340, 480);
 
-        const cx = 360;
-        const cy = 440;
+        ctx.shadowBlur = 50 + volume * 120; ctx.shadowColor = '#0f0'; ctx.fillStyle = '#0f0';
+        ctx.beginPath(); ctx.arc(cx - 90, cy - 80, 55 + volume * 35, 0, Math.PI * 2);
+        ctx.arc(cx + 90, cy - 80, 55 + volume * 35, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
 
-        ctx.fillStyle = '#0a0a0a';
-        ctx.fillRect(cx - 170, cy - 240, 340, 480);
-
-        ctx.shadowBlur = 50 + volume * 120;
-        ctx.shadowColor = '#0f0';
-        ctx.fillStyle = '#0f0';
-        ctx.beginPath();
-        ctx.arc(cx - 90, cy - 80, 55 + volume * 35, 0, Math.PI * 2);
-        ctx.arc(cx + 90, cy - 80, 55 + volume * 35, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        ctx.strokeStyle = '#0f0';
-        ctx.lineWidth = 10;
-        ctx.beginPath();
+        ctx.strokeStyle = '#0f0'; ctx.lineWidth = 10; ctx.beginPath();
         for (let i = 0; i < 32; i++) {
           const x = cx - 150 + i * 15;
           const y = cy + 110 + Math.sin(elapsed / 120 + i) * volume * 90;
@@ -415,20 +368,14 @@ export default function App() {
         }
         ctx.stroke();
 
-        ctx.font = 'bold 46px monospace';
-        ctx.fillStyle = '#0f0';
-        ctx.textAlign = 'center';
+        ctx.font = 'bold 46px monospace'; ctx.fillStyle = '#0f0'; ctx.textAlign = 'center';
         const shownWords = words.slice(0, Math.floor(progress * words.length) + 2);
         const text = shownWords.join(' ') + (progress < 1 ? '...' : '');
         const lines = text.match(/.{1,22}(\s|$)/g) || [];
-        lines.forEach((line, i) => {
-          ctx.fillText(line.trim(), cx, 900 + i * 68);
-        });
+        lines.forEach((line, i) => ctx.fillText(line.trim(), cx, 900 + i * 68));
 
-        ctx.fillStyle = '#111';
-        ctx.fillRect(80, 1160, 560, 32);
-        ctx.fillStyle = '#0f0';
-        ctx.fillRect(80, 1160, 560 * progress, 32);
+        ctx.fillStyle = '#111'; ctx.fillRect(80, 1160, 560, 32);
+        ctx.fillStyle = '#0f0'; ctx.fillRect(80, 1160, 560 * progress, 32);
 
         if (elapsed < duration) {
           animationRef.current = requestAnimationFrame(draw);
@@ -436,7 +383,6 @@ export default function App() {
           setTimeout(() => recorder.stop(), 800);
         }
       };
-
       animationRef.current = requestAnimationFrame(draw);
     } catch (err) {
       console.error(err);
@@ -445,7 +391,7 @@ export default function App() {
     }
   };
 
-  // ==================== Send ====================
+  // ==================== Send Message ====================
   const sendMessage = async () => {
     if (!previewVideo) return;
     setProcessing(true);
@@ -476,7 +422,6 @@ export default function App() {
     }
   };
 
-  // ==================== Share & Copy ====================
   const copyLink = () => {
     navigator.clipboard.writeText(`${window.location.origin}/u/${user.username}`);
     setLinkCopied(true);
@@ -487,11 +432,7 @@ export default function App() {
     const file = new File([blob], 'voiceanon_robot_message.webm', { type: blob.type });
     if (navigator.canShare?.({ files: [file] })) {
       try {
-        await navigator.share({
-          files: [file],
-          title: 'Anonymous Robot Message',
-          text: 'You received a voice message!',
-        });
+        await navigator.share({ files: [file], title: 'Anonymous Robot Message' });
         return;
       } catch (e) {}
     }
@@ -509,15 +450,9 @@ export default function App() {
         <h1 className="text-6xl font-bold mb-4">VoiceAnon</h1>
         <p className="text-2xl mb-12 text-center">Anonymous. Robotic. Untraceable.</p>
         <div className="space-y-5 w-full max-w-xs">
-          <button onClick={() => setView('signin')} className="w-full py-5 border-2 border-green-500 rounded-xl text-2xl hover:bg-green-500 hover:text-black transition">
-            Login
-          </button>
-          <button onClick={() => setView('signup')} className="w-full py-5 bg-green-500 text-black font-bold rounded-xl text-2xl">
-            Create Identity
-          </button>
-          <button onClick={() => setView('record')} className="w-full py-5 bg-gray-800 rounded-xl text-2xl">
-            Send Anonymous
-          </button>
+          <button onClick={() => setView('signin')} className="w-full py-5 border-2 border-green-500 rounded-xl text-2xl hover:bg-green-500 hover:text-black transition">Login</button>
+          <button onClick={() => setView('signup')} className="w-full py-5 bg-green-500 text-black font-bold rounded-xl text-2xl">Create Identity</button>
+          <button onClick={() => setView('record')} className="w-full py-5 bg-gray-800 rounded-xl text-2xl">Send Anonymous</button>
         </div>
       </div>
     );
@@ -525,7 +460,6 @@ export default function App() {
 
   if (view === 'signin' || view === 'signup') {
     const isSignIn = view === 'signin';
-
     const handleSubmit = async (e) => {
       e.preventDefault();
       setAuthError('');
@@ -544,21 +478,12 @@ export default function App() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-6">
         <form onSubmit={handleSubmit} className="bg-gray-900 p-10 rounded-2xl border border-green-800 w-full max-w-sm space-y-6">
-          <h2 className="text-4xl text-green-500 text-center font-bold">
-            {isSignIn ? 'Access Terminal' : 'Initialize Identity'}
-          </h2>
+          <h2 className="text-4xl text-green-500 text-center font-bold">{isSignIn ? 'Access Terminal' : 'Initialize Identity'}</h2>
           {authError && <p className="text-red-500 text-center">{authError}</p>}
-          {!isSignIn && (
-            <input required placeholder="Username" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)}
-              className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />
-          )}
-          <input required type="email" placeholder="Email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)}
-            className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />
-          <input required type="password" placeholder="Password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)}
-            className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />
-          <button type="submit" className="w-full py-5 bg-green-500 text-black font-bold rounded-xl text-2xl">
-            {isSignIn ? 'Enter' : 'Create'}
-          </button>
+          {!isSignIn && <input required placeholder="Username" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />}
+          <input required type="email" placeholder="Email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />
+          <input required type="password" placeholder="Password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} className="w-full p-4 bg-black border border-green-800 rounded text-white text-lg" />
+          <button type="submit" className="w-full py-5 bg-green-500 text-black font-bold rounded-xl text-2xl">{isSignIn ? 'Enter' : 'Create'}</button>
           <button type="button" onClick={() => setView(isSignIn ? 'signup' : 'signin')} className="text-gray-400 text-center w-full">
             {isSignIn ? "Don't have an identity?" : 'Already initialized?'}
           </button>
@@ -575,25 +500,21 @@ export default function App() {
             <User className="w-10 h-10 text-green-500" />
             <h1 className="text-3xl">@{user.username}</h1>
           </div>
-          <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }}
-            className="text-red-500 flex items-center gap-2">
+          <button onClick={() => { mockAuth.signOut(); setUser(null); setView('landing'); }} className="text-red-500 flex items-center gap-2">
             <LogOut /> Logout
           </button>
         </div>
 
         <div className="bg-gray-900 border border-green-600 p-6 rounded-xl mb-8">
           <p className="text-green-400 mb-3">Your anonymous link</p>
-          <code className="block bg-black p-4 rounded text-sm break-all">
-            {window.location.origin}/u/{user.username}
-          </code>
+          <code className="block bg-black p-4 rounded text-sm break-all">{window.location.origin}/u/{user.username}</code>
           <button onClick={copyLink} className="mt-4 w-full py-4 bg-green-600 rounded-xl flex items-center justify-center gap-2">
             {linkCopied ? <CheckCircle /> : <Copy />}
             {linkCopied ? 'Copied!' : 'Copy Link'}
           </button>
         </div>
 
-        <button onClick={() => { setMessages(msgDB.get(user.username)); setView('inbox'); }}
-          className="w-full py-5 bg-gray-800 rounded-xl flex items-center justify-center gap-3 text-xl mb-4">
+        <button onClick={() => { setMessages(msgDB.get(user.username)); setView('inbox'); }} className="w-full py-5 bg-gray-800 rounded-xl flex items-center justify-center gap-3 text-xl mb-4">
           <Inbox /> Inbox ({messages.length})
         </button>
 
@@ -608,7 +529,6 @@ export default function App() {
     return (
       <div className="bg-black text-white min-h-screen flex flex-col">
         <canvas ref={canvasRef} className="hidden" />
-
         <div className="p-4 bg-gray-900 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center text-black text-2xl font-bold">
@@ -630,8 +550,7 @@ export default function App() {
                 <button onClick={cancelRecording} className="flex-1 py-5 bg-red-600 rounded-xl flex items-center justify-center gap-2">
                   <Trash2 /> Discard
                 </button>
-                <button onClick={sendMessage} disabled={processing}
-                  className="flex-1 py-5 bg-green-600 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50">
+                <button onClick={sendMessage} disabled={processing} className="flex-1 py-5 bg-green-600 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50">
                   {processing ? <Loader2 className="animate-spin" /> : <Send />} Send
                 </button>
               </div>
@@ -657,15 +576,11 @@ export default function App() {
               }} className="bg-gray-900 p-10 rounded-2xl">
                 {isPlayingPreview ? <Pause className="w-24 h-24 text-green-500" /> : <Play className="w-24 h-24 text-green-500" />}
               </button>
-
               <p className="text-4xl font-mono">{formatTime(recordingTime)}</p>
               {transcript && <p className="text-lg text-gray-400 px-8 max-w-md mx-auto">{transcript}</p>}
-
               <div className="flex gap-4">
                 <button onClick={cancelRecording} className="px-10 py-5 bg-red-600 rounded-xl"><Trash2 /></button>
-                <button onClick={generatePreview} className="flex-1 py-5 bg-green-600 rounded-xl text-xl font-bold">
-                  Convert to Robot Video
-                </button>
+                <button onClick={generatePreview} className="flex-1 py-5 bg-green-600 rounded-xl text-xl font-bold">Convert to Robot Video</button>
               </div>
             </div>
           ) : (
@@ -689,8 +604,7 @@ export default function App() {
         <CheckCircle className="w-32 h-32 text-green-500 mb-8" />
         <h1 className="text-5xl font-bold mb-6">Sent Anonymously</h1>
         <p className="text-xl text-gray-400 mb-12">Your robot message is delivered.</p>
-        <button onClick={() => { cancelRecording(); setView('record'); }}
-          className="px-12 py-6 bg-green-600 rounded-xl text-2xl">
+        <button onClick={() => { cancelRecording(); setView('record'); }} className="px-12 py-6 bg-green-600 rounded-xl text-2xl">
           Send Another
         </button>
       </div>
@@ -712,7 +626,7 @@ export default function App() {
         ) : (
           <div className="space-y-8">
             {currentMessages.map((m) => (
-              <MessageCard key={m.id} message={m} onShare={(blob) => shareVideo(blob || previewVideo?.blob)} />
+              <MessageCard key={m.id} message={m} currentUser={user} />
             ))}
           </div>
         )}
@@ -723,23 +637,46 @@ export default function App() {
   return null;
 }
 
-// ==================== Message Card ====================
-function MessageCard({ message, onShare }) {
+// ==================== FIXED MessageCard ====================
+function MessageCard({ message, currentUser }) {
   const [videoUrl, setVideoUrl] = useState('');
 
   useEffect(() => {
-    let canceled = false;
-    base64ToBlob(message.videoBase64).then((blob) => {
-      if (!canceled) {
-        const url = URL.createObjectURL(blob);
-        setVideoUrl(url);
+    let isMounted = true;
+    let objectUrl = null;
+
+    const load = async () => {
+      try {
+        const blob = await base64ToBlob(message.videoBase64);
+        if (!isMounted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVideoUrl(objectUrl);
+      } catch (err) {
+        console.error('Failed to load video:', err);
       }
-    });
+    };
+    load();
+
     return () => {
-      canceled = true;
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      isMounted = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [message.videoBase64]);
+
+  const handleShare = async () => {
+    const blob = await base64ToBlob(message.videoBase64);
+    const file = new File([blob], 'voiceanon_message.webm', { type: blob.type });
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Anonymous Robot Message' });
+      } catch (e) {}
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'voiceanon_message.webm';
+      a.click();
+    }
+  };
 
   const handleDownload = async () => {
     const blob = await base64ToBlob(message.videoBase64);
@@ -755,7 +692,7 @@ function MessageCard({ message, onShare }) {
         <video src={videoUrl} controls className="w-full aspect-[9/16]" />
       ) : (
         <div className="w-full aspect-[9/16] bg-black flex items-center justify-center">
-          <Loader2 className="w-12 h-12 animate-spin text-green-500" />
+          <Loader2 className="w-16 h-16 animate-spin text-green-500" />
         </div>
       )}
 
@@ -765,19 +702,21 @@ function MessageCard({ message, onShare }) {
         </p>
 
         <div className="grid grid-cols-3 gap-3">
-          <button onClick={() => base64ToBlob(message.videoBase64).then(onShare)} className="bg-gradient-to-r from-purple-600 to-pink-600 py-4 rounded-xl font-bold text-sm">TikTok</button>
-          <button onClick={() => base64ToBlob(message.videoBase64).then(onShare)} className="bg-green-600 py-4 rounded-xl font-bold text-sm">WhatsApp</button>
-          <button onClick={() => base64ToBlob(message.videoBase64).then(onShare)} className="bg-blue-700 py-4 rounded-xl font-bold text-sm">Facebook</button>
-          <button onClick={() => base64ToBlob(message.videoBase64).then(onShare)} className="bg-gradient-to-r from-pink-500 to-orange-500 py-4 rounded-xl font-bold text-sm col-span-2">Instagram</button>
-          <button onClick={() => base64ToBlob(message.videoBase64).then(onShare)} className="bg-black border border-white py-4 rounded-xl font-bold text-sm">X / Twitter</button>
+          <button onClick={handleShare} className="bg-gradient-to-r from-purple-600 to-pink-600 py-4 rounded-xl font-bold text-sm">TikTok</button>
+          <button onClick={handleShare} className="bg-green-600 py-4 rounded-xl font-bold text-sm">WhatsApp</button>
+          <button onClick={handleShare} className="bg-blue-700 py-4 rounded-xl font-bold text-sm">Facebook</button>
+          <button onClick={handleShare} className="bg-gradient-to-r from-pink-500 to-orange-500 py-4 rounded-xl font-bold text-sm col-span-2">Instagram</button>
+          <button onClick={handleShare} className="bg-black border border-white py-4 rounded-xl font-bold text-sm">X / Twitter</button>
         </div>
 
         <div className="flex gap-3">
           <button onClick={handleDownload} className="flex-1 py-4 bg-gray-800 rounded-xl flex items-center justify-center gap-2">
             <Download /> Save
           </button>
-          <button onClick={() => { msgDB.delete(user?.username || 'unknown', message.id); window.location.reload(); }}
-            className="px-8 py-4 bg-red-900 rounded-xl">
+          <button onClick={() => {
+            msgDB.delete(currentUser.username, message.id);
+            window.location.reload();
+          }} className="px-8 py-4 bg-red-900 rounded-xl">
             <Trash2 />
           </button>
         </div>
