@@ -79,43 +79,193 @@ const authDB = {
   }
 };
 
-// ==================== Message DB (Fixed Quota Handling) ====================
+// ==================== Message DB (FIXED - Separate Video Storage) ====================
 const voxDB = {
   save(voxKey, msg) {
-    const key = `vox_${voxKey}`;
-    let list = JSON.parse(localStorage.getItem(key) || '[]');
+    const metaKey = `vox_${voxKey}`;
+    const videoKey = `vox_video_${msg.id}`;
     
-    // Add new message
-    list.unshift({ ...msg, id: crypto.randomUUID() });
+    let list = JSON.parse(localStorage.getItem(metaKey) || '[]');
     
-    // Keep only last 20 messages to save space
-    if (list.length > 20) list = list.slice(0, 20);
+    // Save metadata only (no video)
+    const metadata = {
+      id: msg.id,
+      text: msg.text,
+      timestamp: msg.timestamp,
+      duration: msg.duration,
+      mimeType: msg.mimeType,
+      videoKey: videoKey // Reference to where video is stored
+    };
+    
+    list.unshift(metadata);
+    
+    // Keep only last 20 messages
+    if (list.length > 20) {
+      const removed = list.slice(20);
+      removed.forEach(m => localStorage.removeItem(`vox_video_${m.id}`));
+      list = list.slice(0, 20);
+    }
 
     try {
-      localStorage.setItem(key, JSON.stringify(list));
+      // Save metadata
+      localStorage.setItem(metaKey, JSON.stringify(list));
+      
+      // Save video separately
+      if (msg.videoBase64) {
+        localStorage.setItem(videoKey, msg.videoBase64);
+      }
+      
       return true;
     } catch (e) {
       if (e.name === 'QuotaExceededError') {
+        // Clean up old videos to make space
+        const oldList = JSON.parse(localStorage.getItem(metaKey) || '[]');
+        if (oldList.length > 0) {
+          const oldest = oldList.pop();
+          localStorage.removeItem(`vox_video_${oldest.id}`);
+          localStorage.setItem(metaKey, JSON.stringify(oldList));
+          // Retry
+          try {
+            localStorage.setItem(metaKey, JSON.stringify(list));
+            if (msg.videoBase64) localStorage.setItem(videoKey, msg.videoBase64);
+            return true;
+          } catch {
+            throw new Error('Inbox Full: Cannot save message. Try recording shorter video.');
+          }
+        }
         throw new Error('Inbox Full: Local storage limit reached.');
       }
       throw e;
     }
   },
+
   get(voxKey) {
     const key = `vox_${voxKey}`;
     try {
-      return JSON.parse(localStorage.getItem(key) || '[]');
+      const list = JSON.parse(localStorage.getItem(key) || '[]');
+      // Attach video data to each message
+      return list.map(m => ({
+        ...m,
+        videoBase64: localStorage.getItem(`vox_video_${m.id}`)
+      }));
     } catch (e) {
       return [];
     }
   },
+
   delete(voxKey, id) {
     const key = `vox_${voxKey}`;
     let list = JSON.parse(localStorage.getItem(key) || '[]');
     list = list.filter(m => m.id !== id);
     localStorage.setItem(key, JSON.stringify(list));
+    // Also delete video
+    localStorage.removeItem(`vox_video_${id}`);
   }
 };
+
+// ==================== Updated sendVoxCast ====================
+const sendVoxCast = async () => {
+  if (!previewVideo || !targetKey) {
+    alert("Error: Missing video or target key.");
+    return;
+  }
+  setProcessing(true);
+  try {
+    const base64 = await blobToBase64(previewVideo.blob);
+    
+    const msgId = crypto.randomUUID();
+    
+    // Save with metadata first, then video
+    voxDB.save(targetKey, {
+      id: msgId,
+      text: transcript.trim() || 'VoxCast',
+      timestamp: new Date().toISOString(),
+      duration: recordingTime,
+      videoBase64: base64,
+      mimeType: previewVideo.blob.type,
+    });
+
+    cancelRecording();
+    setView('sent');
+  } catch (e) {
+    console.error(e);
+    alert(e.message || 'Transmission failed. Try a shorter message.');
+  } finally {
+    setProcessing(false);
+  }
+};
+
+// ==================== Updated VoxCastCard ====================
+function VoxCastCard({ message, voxKey }) {
+  const [videoUrl, setVideoUrl] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    
+    if (!message.videoBase64) {
+      setLoading(false);
+      return;
+    }
+
+    base64ToBlob(message.videoBase64).then(blob => {
+      if (mounted) {
+        setVideoUrl(URL.createObjectURL(blob));
+        setLoading(false);
+      }
+    }).catch(err => {
+      console.error('Failed to load video:', err);
+      setLoading(false);
+    });
+
+    return () => { 
+      mounted = false; 
+      if (videoUrl) URL.revokeObjectURL(videoUrl); 
+    };
+  }, [message.videoBase64, message.id]);
+
+  const share = async () => {
+    if (!message.videoBase64) return;
+    const blob = await base64ToBlob(message.videoBase64);
+    const file = new File([blob], 'voxcast.webm', { type: blob.type });
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file] });
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'voxcast.webm';
+      a.click();
+    }
+  };
+
+  return (
+    <div className="bg-gray-900 rounded-3xl overflow-hidden border-4 border-cyan-600">
+      {loading ? (
+        <div className="w-full aspect-[9/16] bg-black flex items-center justify-center">
+          <Loader2 className="w-24 h-24 animate-spin text-cyan-400" />
+        </div>
+      ) : videoUrl ? (
+        <video src={videoUrl} controls className="w-full aspect-[9/16]" />
+      ) : (
+        <div className="w-full aspect-[9/16] bg-black flex items-center justify-center text-cyan-600">
+          <p className="text-center">Video unavailable</p>
+        </div>
+      )}
+      <div className="p-8 space-y-6">
+        <p className="text-xl opacity-80">{new Date(message.timestamp).toLocaleString()}</p>
+        {message.text && <p className="text-2xl font-medium">"{message.text}"</p>}
+        <div className="flex gap-6">
+          <button onClick={share} disabled={!videoUrl} className="flex-1 py-8 bg-cyan-600 rounded-2xl font-bold text-3xl disabled:opacity-50">
+            Share
+          </button>
+          <button onClick={() => { voxDB.delete(voxKey, message.id); window.location.reload(); }} className="px-12 py-8 bg-red-900 rounded-2xl">
+            <Trash2 className="w-12 h-12" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ==================== Utils ====================
 const blobToBase64 = (blob) => new Promise((res, rej) => {
