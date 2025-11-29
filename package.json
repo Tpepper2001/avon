@@ -1,9 +1,7 @@
 {
-  "name": "voxkey",
-  "version": "2.0.0",
+  "name": "voxkey-v5",
+  "version": "5.0.0",
   "private": true,
-  "description": "Anonymous robot-encrypted voice transmission protocol",
-  "author": "Your Name",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,8 +10,9 @@
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "lucide-react": "^0.379.0",
     "date-fns": "^3.6.0",
-    "lucide-react": "^0.379.0"
+    "qrcode": "^1.5.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
