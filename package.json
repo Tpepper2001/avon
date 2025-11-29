@@ -1,7 +1,9 @@
 {
-  "name": "voice-anon-platform",
-  "version": "1.0.0",
-  "type": "module",
+  "name": "voxkey",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Anonymous robot-encrypted voice transmission protocol",
+  "author": "Your Name",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -10,13 +12,14 @@
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "lucide-react": "^0.263.1"
+    "date-fns": "^3.6.0",
+    "lucide-react": "^0.379.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.0.0",
-    "autoprefixer": "^10.4.14",
-    "postcss": "^8.4.24",
-    "tailwindcss": "^3.3.2",
-    "vite": "^4.3.9"
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "vite": "^5.2.0"
   }
 }
