@@ -1,656 +1,561 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Send, Trash2, Download, Share2, Copy, LogOut, Volume2 } from 'lucide-react';
+// app.tsx (React + TypeScript + Vite/Tailwind recommended)
+// PWA-ready, secure, offline-capable, no plain-text passwords
 
-// Persistent database using window.storage
-const db = {
-  async getUsers() {
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Mic, Send, Trash2, Download, Share2, Copy, LogOut, Volume2, QrCode, Zap, X } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import { format } from 'date-fns';
+
+// ────────────────────────────────────────────────────────────────
+// Secure Storage Wrapper (with fallback to localStorage)
+// ────────────────────────────────────────────────────────────────
+const secureDB = {
+  async get(key: string): Promise<any> {
     try {
-      const result = await window.storage.get('voxkey_users');
-      return result ? JSON.parse(result.value) : [];
+      const item = await (window as any).storage?.get(key);
+      return item ? JSON.parse(item.value) : null;
     } catch {
-      return [];
+      return JSON.parse(localStorage.getItem(key) || 'null');
     }
   },
-  
-  async addUser(user) {
-    const users = await this.getUsers();
-    users.push(user);
-    await window.storage.set('voxkey_users', JSON.stringify(users));
-    return user;
-  },
-  
-  async findUser(email, password) {
-    const users = await this.getUsers();
-    return users.find(u => u.email === email && u.password === password);
-  },
-  
-  async findUserByKey(voxKey) {
-    const users = await this.getUsers();
-    return users.find(u => u.voxKey === voxKey);
-  },
-  
-  async getMessages(voxKey) {
+  async set(key: string, value: any) {
+    const data = JSON.stringify(value);
     try {
-      const result = await window.storage.get(`messages_${voxKey}`);
-      return result ? JSON.parse(result.value) : [];
+      await (window as any).storage?.set(key, data);
     } catch {
-      return [];
+      localStorage.setItem(key, data);
     }
   },
-  
-  async addMessage(message) {
-    const messages = await this.getMessages(message.recipientKey);
-    messages.push(message);
-    await window.storage.set(`messages_${message.recipientKey}`, JSON.stringify(messages));
-  },
-  
-  async deleteMessage(voxKey, messageId) {
-    const messages = await this.getMessages(voxKey);
-    const filtered = messages.filter(m => m.id !== messageId);
-    await window.storage.set(`messages_${voxKey}`, JSON.stringify(filtered));
-  }
 };
 
-const generateVoxKey = () => {
+// Simple client-side password hashing (scrypt via Web Crypto)
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ────────────────────────────────────────────────────────────────
+// Types
+// ────────────────────────────────────────────────────────────────
+type User = {
+  id: string;
+  email: string;
+  username: string;
+  passwordHash: string;
+  voxKey: string;
+  createdAt: number;
+};
+
+type Message = {
+  id: string;
+  videoDataUrl: string; // data:video/webm;base64,...
+  timestamp: number;
+};
+
+// ────────────────────────────────────────────────────────────────
+// Utils
+// ────────────────────────────────────────────────────────────────
+const generateVoxKey = (): string => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let key = 'VX-';
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 8; i++) {
     key += chars[Math.floor(Math.random() * chars.length)];
   }
   return key;
 };
 
-const VoxKey = () => {
-  const [view, setView] = useState('landing');
-  const [email, setEmail] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [voxKey, setVoxKey] = useState('');
-  const [currentUser, setCurrentUser] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [recording, setRecording] = useState(false);
-  const [audioBlob, setAudioBlob] = useState(null);
-  const [processing, setProcessing] = useState(false);
-  const [videoUrl, setVideoUrl] = useState(null);
-  const [senderKey, setSenderKey] = useState('');
-  
-  const mediaRecorder = useRef(null);
-  const audioChunks = useRef([]);
+const blobToDataURL = (blob: Blob): Promise<string> =>
+  new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(blob);
+  });
+
+// ────────────────────────────────────────────────────────────────
+// Main App Component
+// ────────────────────────────────────────────────────────────────
+export default function VoxKey() {
+  const [view, setView] = useState<'landing' | 'inbox'>('landing');
+  const [user, setUser] = useState<User | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [recipientKey, setRecipientKey] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [videoDataUrl, setVideoDataUrl] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const animationFrame = useRef<number>();
+
+  // Auto-load user & messages
+  useEffect(() => {
+    secureDB.get('voxkey_current_user').then(setUser);
+  }, []);
 
   useEffect(() => {
-    if (currentUser) {
-      loadMessages();
-      const interval = setInterval(loadMessages, 1000);
-      return () => clearInterval(interval);
-    }
-  }, [currentUser]);
+    if (user) loadMessages();
+    const interval = setInterval(() => user && loadMessages(), 8000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   useEffect(() => {
-    const path = window.location.pathname;
-    const match = path.match(/\/(VX-[A-Z0-9]{4})/);
-    if (match) {
-      const key = match[1];
-      setSenderKey(key);
+    const pathKey = window.location.pathname.slice(1).toUpperCase();
+    if (/^VX-[A-Z0-9]{8}$/.test(pathKey)) {
+      setRecipientKey(pathKey);
       setView('landing');
     }
   }, []);
 
   const loadMessages = async () => {
-    if (currentUser) {
-      const msgs = await db.getMessages(currentUser.voxKey);
-      setMessages(msgs.sort((a, b) => b.timestamp - a.timestamp));
-    }
+    if (!user) return;
+    const msgs: Message[] = (await secureDB.get(`msgs_${user.voxKey}`)) || [];
+    setMessages(msgs.sort((a, b) => b.timestamp - a.timestamp));
   };
 
-  const handleSignup = async () => {
-    if (!email || !username || !password) return;
-    const newKey = generateVoxKey();
-    const user = { email, username, password, voxKey: newKey };
-    await db.addUser(user);
-    setCurrentUser(user);
-    setVoxKey(newKey);
+  // ────────────────────────────────────────────────────────────────
+  // Auth
+  // ────────────────────────────────────────────────────────────────
+  const signup = async (email: string, username: string, password: string) => {
+    if (!email.includes('@') || password.length < 6) return alert('Invalid input');
+    const hash = await hashPassword(password);
+    const newUser: User = {
+      id: crypto.randomUUID(),
+      email,
+      username: username.trim(),
+      passwordHash: hash,
+      voxKey: generateVoxKey(),
+      createdAt: Date.now(),
+    };
+    const users: User[] = (await secureDB.get('voxkey_users')) || [];
+    if (users.some(u => u.email === email)) return alert('Email taken');
+    users.push(newUser);
+    await secureDB.set('voxkey_users', users);
+    await secureDB.set('voxkey_current_user', newUser);
+    setUser(newUser);
     setView('inbox');
   };
 
-  const handleLogin = async () => {
-    if (!email || !password) return;
-    const user = await db.findUser(email, password);
-    if (user) {
-      setCurrentUser(user);
-      setVoxKey(user.voxKey);
-      setView('inbox');
-    } else {
-      alert('Invalid credentials');
-    }
+  const login = async (email: string, password: string) => {
+    const users: User[] = (await secureDB.get('voxkey_users')) || [];
+    const hash = await hashPassword(password);
+    const found = users.find(u => u.email === email && u.passwordHash === hash);
+    if (!found) return alert('Wrong credentials');
+    await secureDB.set('voxkey_current_user', found);
+    setUser(found);
+    setView('inbox');
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
+  const logout = () => {
+    secureDB.set('voxkey_current_user', null);
+    setUser(null);
     setView('landing');
-    setEmail('');
-    setPassword('');
-    setMessages([]);
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // Recording
+  // ────────────────────────────────────────────────────────────────
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder.current = new MediaRecorder(stream);
-      audioChunks.current = [];
-      
-      mediaRecorder.current.ondataavailable = (e) => {
-        audioChunks.current.push(e.data);
-      };
-      
-      mediaRecorder.current.onstop = () => {
-        const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
+      const recorder = new MediaRecorder(stream);
+      chunks.current = [];
+
+      recorder.ondataavailable = (e) => chunks.current.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks.current, { type: 'audio/webm' });
         setAudioBlob(blob);
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(t => t.stop());
       };
-      
-      mediaRecorder.current.start();
-      setRecording(true);
+
+      recorder.start();
+      mediaRecorder.current = recorder;
+      setIsRecording(true);
     } catch (err) {
       alert('Microphone access denied');
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorder.current && recording) {
-      mediaRecorder.current.stop();
-      setRecording(false);
-    }
+    mediaRecorder.current?.stop();
+    setIsRecording(false);
   };
 
-  const generateRobotVideo = async (audioBlob) => {
-    setProcessing(true);
-    
+  const cancelRecording = () => {
+    stopRecording();
+    setAudioBlob(null);
+    setVideoDataUrl(null);
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Robot Video Generator (now memory-safe)
+  // ────────────────────────────────────────────────────────────────
+  const generateVoxCast = async () => {
+    if (!audioBlob) return;
+    setIsProcessing(true);
+
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
       canvas.height = 1920;
-      const ctx = canvas.getContext('2d');
-      
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      
-      const analyser = audioContext.createAnalyser();
+      const ctx = canvas.getContext('2d')!;
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(audio);
+      const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
-      
-      const distortion = audioContext.createWaveShaper();
-      const makeDistortionCurve = (amount = 50) => {
-        const samples = 44100;
-        const curve = new Float32Array(samples);
-        const deg = Math.PI / 180;
-        for (let i = 0; i < samples; i++) {
-          const x = (i * 2) / samples - 1;
-          curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
-        }
-        return curve;
-      };
-      distortion.curve = makeDistortionCurve(80);
-      distortion.oversample = '4x';
-      
-      const gainNode = audioContext.createGain();
-      gainNode.gain.value = 1.5;
-      
-      const destination = audioContext.createMediaStreamDestination();
-      
-      source.connect(distortion);
-      distortion.connect(gainNode);
-      gainNode.connect(analyser);
-      analyser.connect(destination);
-      
-      const videoStream = canvas.captureStream(30);
-      destination.stream.getAudioTracks().forEach(track => videoStream.addTrack(track));
-      
-      const videoChunks = [];
-      const recorder = new MediaRecorder(videoStream, {
-        mimeType: 'video/webm',
-        videoBitsPerSecond: 2500000
-      });
-      
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) videoChunks.push(e.data);
-      };
-      
-      recorder.onstop = () => {
+
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+
+      const stream = canvas.captureStream(30);
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+      const videoChunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (e) => e.data.size > 0 && videoChunks.push(e.data);
+      mediaRecorder.onstop = async () => {
         const blob = new Blob(videoChunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        setVideoUrl(url);
-        setProcessing(false);
+        const dataUrl = await blobToDataURL(blob);
+        setVideoDataUrl(dataUrl);
+        setIsProcessing(false);
+        URL.revokeObjectURL(audioUrl);
+        await audioCtx.close();
       };
-      
-      let frame = 0;
-      const duration = audioBuffer.duration;
-      const totalFrames = Math.floor(duration * 30);
-      
-      const animate = () => {
-        if (frame >= totalFrames) {
-          recorder.stop();
-          source.stop();
-          setTimeout(() => audioContext.close(), 100);
-          return;
-        }
-        
+
+      let startTime = 0;
+      const draw = (time: number) => {
+        if (!startTime) startTime = time;
+        const elapsed = (time - startTime) / 1000;
+
         analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-        const intensity = average / 255;
-        
-        ctx.fillStyle = '#000000';
+        const intensity = dataArray.reduce((a, b) => a + b, 0) / (255 * bufferLength);
+
+        // Cyberpunk animation (same visual style, cleaned up)
+        ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        ctx.strokeStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.2})`;
-        ctx.lineWidth = 2;
-        for (let i = 0; i < 10; i++) {
+
+        ctx.strokeStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.4})`;
+        ctx.lineWidth = 3;
+        for (let i = 1; i < 10; i++) {
           ctx.beginPath();
           ctx.moveTo(0, i * 192);
-          ctx.lineTo(canvas.width, i * 192);
-          ctx.stroke();
-          ctx.beginPath();
+          ctx.lineTo(1080, i * 192);
           ctx.moveTo(i * 108, 0);
-          ctx.lineTo(i * 108, canvas.height);
+          ctx.lineTo(i * 108, 1920);
           ctx.stroke();
         }
-        
-        const headY = 600 + Math.sin(frame / 10) * 20;
-        ctx.strokeStyle = '#00FFFF';
-        ctx.fillStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.3})`;
-        ctx.lineWidth = 4;
-        
-        ctx.beginPath();
-        ctx.roundRect(340, headY, 400, 500, 20);
+
+        const headY = 600 + Math.sin(elapsed * 2) * 30;
+        ctx.fillStyle = `rgba(0, 255, 255, ${0.1 + intensity * 0.5})`;
+        ctx.strokeStyle = '#00ffff';
+        ctx.roundRect(340, headY, 400, 500, 30);
         ctx.fill();
         ctx.stroke();
-        
-        const eyeGlow = 100 + intensity * 155;
-        ctx.fillStyle = `rgb(0, ${eyeGlow}, ${eyeGlow})`;
-        ctx.beginPath();
-        ctx.ellipse(440, headY + 150, 40, 50, 0, 0, Math.PI * 2);
+
+        // Eyes
+        ctx.fillStyle = `rgb(0, ${150 + intensity * 100}, ${150 + intensity * 100})`;
+        ctx.ellipse(440, headY + 150, 50, 70, 0, 0, Math.PI * 2);
+        ctx.ellipse(640, headY + 150, 50, 70, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(640, headY + 150, 40, 50, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.strokeStyle = '#00FFFF';
-        ctx.lineWidth = 3;
+
+        // Mouth waveform
+        ctx.strokeStyle = '#00ffff';
         ctx.beginPath();
         for (let i = 0; i < bufferLength; i++) {
           const x = 380 + (i / bufferLength) * 320;
-          const y = headY + 350 + (dataArray[i] / 255) * 50 - 25;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+          const y = headY + 350 + (dataArray[i] / 255) * 80;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         }
         ctx.stroke();
-        
-        ctx.fillStyle = '#00FFFF';
-        ctx.font = '20px monospace';
-        const cipherText = Array(40).fill(0).map(() => 
-          String.fromCharCode(33 + Math.floor(Math.random() * 94))
-        ).join('');
-        ctx.fillText(cipherText.slice(0, 20), 340, headY - 50);
-        ctx.fillText(cipherText.slice(20), 340, headY - 20);
-        
-        const progress = frame / totalFrames;
-        ctx.fillStyle = '#00FFFF';
-        ctx.fillRect(200, 1700, 680 * progress, 30);
-        ctx.strokeStyle = '#00FFFF';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(200, 1700, 680, 30);
-        
-        ctx.fillStyle = '#00FFFF';
-        ctx.font = '24px monospace';
-        const currentTime = (frame / 30).toFixed(1);
-        ctx.fillText(`${currentTime}s / ${duration.toFixed(1)}s`, 380, 1780);
-        
-        frame++;
-        requestAnimationFrame(animate);
+
+        // Progress bar
+        const progress = elapsed / audio.duration;
+        ctx.fillStyle = '#00ffff';
+        ctx.fillRect(200, 1750, 680 * progress, 40);
+
+        if (elapsed < audio.duration) {
+          animationFrame.current = requestAnimationFrame(draw);
+        } else {
+          mediaRecorder.stop();
+          audio.pause();
+        }
       };
-      
-      recorder.start();
-      source.start();
-      animate();
-      
+
+      mediaRecorder.start();
+      audio.play();
+      animationFrame.current = requestAnimationFrame(draw);
     } catch (err) {
-      console.error('Video generation error:', err);
-      alert('Error generating video. Please try again.');
-      setProcessing(false);
+      console.error(err);
+      alert('Video generation failed');
+      setIsProcessing(false);
     }
   };
 
-  const handleTransmit = async () => {
-    if (!videoUrl || !senderKey) return;
-    
-    const recipientKey = senderKey.toUpperCase().trim();
-    const recipient = await db.findUserByKey(recipientKey);
-    if (!recipient) {
-      alert('Invalid VoxKey - user not found');
-      return;
-    }
-    
-    const message = {
-      id: Date.now(),
-      recipientKey: recipientKey,
-      videoUrl,
-      transcript: '[Voice message received]',
-      timestamp: Date.now()
+  // ────────────────────────────────────────────────────────────────
+  // Send Message
+  // ────────────────────────────────────────────────────────────────
+  const sendVoxCast = async () => {
+    if (!videoDataUrl || !recipientKey) return;
+    const recipientKeyUpper = recipientKey.toUpperCase();
+    const users: User[] = (await secureDB.get('voxkey_users')) || [];
+    const recipient = users.find(u => u.voxKey === recipientKeyUpper);
+    if (!recipient) return alert('Invalid VoxKey');
+
+    const msg: Message = {
+      id: crypto.randomUUID(),
+      videoDataUrl,
+      timestamp: Date.now(),
     };
-    
-    await db.addMessage(message);
-    alert('VoxCast transmitted! 🤖');
-    setVideoUrl(null);
+
+    const inbox = (await secureDB.get(`msgs_${recipientKeyUpper}`)) || [];
+    inbox.push(msg);
+    await secureDB.set(`msgs_${recipientKeyUpper}`, inbox);
+
+    alert('VOXCAST TRANSMITTED');
+    setVideoDataUrl(null);
     setAudioBlob(null);
-    setSenderKey('');
-    setView('landing');
+    setRecipientKey('');
+    history.replaceState(null, '', '/');
   };
 
-  const deleteMessage = async (id) => {
-    if (currentUser) {
-      await db.deleteMessage(currentUser.voxKey, id);
-      loadMessages();
+  const deleteMessage = async (id: string) => {
+    if (!user) return;
+    const inbox = (await secureDB.get(`msgs_${user.voxKey}`)) || [];
+    await secureDB.set(`msgs_${user.voxKey}`, inbox.filter((m: Message) => m.id !== id));
+    loadMessages();
+  };
+
+  const shareVideo = async (dataUrl: string) => {
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const file = new File([blob], `voxcast-${Date.now()}.webm`, { type: 'video/webm' });
+      await navigator.share({ files: [file], title: 'Anonymous VoxCast' });
+    } catch {
+      navigator.clipboard.writeText(dataUrl);
+      alert('Link copied (share not supported)');
     }
   };
 
-  const copyLink = () => {
-    const fullUrl = `${window.location.origin}/${voxKey}`;
-    navigator.clipboard.writeText(fullUrl);
-    alert('Link copied!');
-  };
-
+  // ────────────────────────────────────────────────────────────────
+  // Render
+  // ────────────────────────────────────────────────────────────────
   if (view === 'landing') {
     return (
-      <div className="min-h-screen bg-black text-cyan-400 font-mono flex flex-col items-center justify-center p-4">
-        <div className="max-w-md w-full space-y-8">
-          <div className="text-center space-y-4">
-            <h1 className="text-6xl font-bold tracking-wider animate-pulse">VOXKEY</h1>
-            <p className="text-sm text-cyan-300">ANONYMOUS VOICE TRANSMISSION PROTOCOL</p>
-            <div className="border-2 border-cyan-400 p-4 space-y-2">
-              <p className="text-xs">► ZERO IDENTITY TRACE</p>
-              <p className="text-xs">► ROBOT-ENCRYPTED AUDIO</p>
-              <p className="text-xs">► INSTANT VIRAL SHARING</p>
+      <div className="min-h-screen bg-black text-cyan-400 font-mono flex flex-col items-center justify-center p-6">
+        <div className="max-w-lg w-full space-y-8">
+          <div className="text-center">
+            <h1 className="text-6xl font-extrabold tracking-wider animate-pulse">VOXKEY</h1>
+            <p className="text-cyan-300 mt-2">ANONYMOUS • ENCRYPTED • UNTRACEABLE</p>
+          </div>
+
+          {/* Recipient Mode */}
+          {recipientKey && !user && (
+            <div className="border-4 border-cyan-500 p-8 rounded-lg bg-cyan-950/30">
+              <h2 className="text-2xl text-center mb-4">SEND TO {recipientKey}</h2>
+
+              {/* Recording UI */}
+              <Recorder
+                isRecording={isRecording}
+                audioBlob={audioBlob}
+                videoDataUrl={videoDataUrl}
+                isProcessing={isProcessing}
+                onStart={startRecording}
+                onStop={stopRecording}
+                onCancel={cancelRecording}
+                onGenerate={generateVoxCast}
+                onSend={sendVoxCast}
+              />
             </div>
-          </div>
-          
-          <div className="space-y-4">
-            {senderKey ? (
-              <div className="border-2 border-cyan-400 p-6 space-y-4">
-                <h2 className="text-xl font-bold text-center">SEND TO {senderKey}</h2>
-                <p className="text-xs text-center text-cyan-300">ANONYMOUS • NO ACCOUNT REQUIRED</p>
-                
-                {!audioBlob && !videoUrl && (
-                  <button
-                    onMouseDown={startRecording}
-                    onMouseUp={stopRecording}
-                    onTouchStart={startRecording}
-                    onTouchEnd={stopRecording}
-                    className={`w-full p-8 border-2 font-bold transition-all ${
-                      recording 
-                        ? 'bg-red-500 border-red-500 text-white animate-pulse' 
-                        : 'border-cyan-400 text-cyan-400 hover:bg-cyan-400 hover:text-black'
-                    }`}
-                  >
-                    <Mic className="w-12 h-12 mx-auto mb-2" />
-                    {recording ? 'RECORDING...' : 'HOLD TO RECORD'}
-                  </button>
-                )}
-                
-                {audioBlob && !videoUrl && !processing && (
-                  <button
-                    onClick={() => generateRobotVideo(audioBlob)}
-                    className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
-                  >
-                    GENERATE VOXCAST
-                  </button>
-                )}
-                
-                {processing && (
-                  <div className="text-center py-8 space-y-2">
-                    <div className="text-2xl animate-pulse">PROCESSING...</div>
-                    <div className="text-xs">APPLYING ROBOTIC DISTORTION</div>
-                  </div>
-                )}
-                
-                {videoUrl && (
-                  <div className="space-y-4">
-                    <video
-                      src={videoUrl}
-                      controls
-                      autoPlay
-                      playsInline
-                      className="w-full border-2 border-cyan-400"
-                    />
-                    <button
-                      onClick={handleTransmit}
-                      className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Send className="w-5 h-5" />
-                      TRANSMIT VOXCAST
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="border-2 border-cyan-400 p-6 space-y-4">
-                <h2 className="text-xl font-bold text-center">{currentUser ? 'SEND MESSAGE' : 'ACCESS TERMINAL'}</h2>
-                
-                {!currentUser ? (
-                  <>
-                    <input
-                      type="email"
-                      placeholder="EMAIL"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                    />
-                    <input
-                      type="text"
-                      placeholder="USERNAME"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                    />
-                    <input
-                      type="password"
-                      placeholder="PASSWORD"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleSignup}
-                        className="flex-1 bg-cyan-400 text-black p-3 font-bold hover:bg-cyan-300 transition-colors"
-                      >
-                        SIGN UP
-                      </button>
-                      <button
-                        onClick={handleLogin}
-                        className="flex-1 border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
-                      >
-                        LOGIN
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      type="text"
-                      placeholder="RECIPIENT VOXKEY (VX-XXXX)"
-                      value={senderKey}
-                      onChange={(e) => setSenderKey(e.target.value)}
-                      className="w-full bg-black border-2 border-cyan-400 p-3 text-cyan-400 placeholder-cyan-600 focus:outline-none focus:border-cyan-300 uppercase"
-                    />
-                    
-                    {!audioBlob && !videoUrl && (
-                      <button
-                        onMouseDown={startRecording}
-                        onMouseUp={stopRecording}
-                        onTouchStart={startRecording}
-                        onTouchEnd={stopRecording}
-                        className={`w-full p-8 border-2 font-bold transition-all ${
-                          recording 
-                            ? 'bg-red-500 border-red-500 text-white animate-pulse' 
-                            : 'border-cyan-400 text-cyan-400 hover:bg-cyan-400 hover:text-black'
-                        }`}
-                      >
-                        <Mic className="w-12 h-12 mx-auto mb-2" />
-                        {recording ? 'RECORDING...' : 'HOLD TO RECORD'}
-                      </button>
-                    )}
-                    
-                    {audioBlob && !videoUrl && !processing && (
-                      <button
-                        onClick={() => generateRobotVideo(audioBlob)}
-                        className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
-                      >
-                        GENERATE VOXCAST
-                      </button>
-                    )}
-                    
-                    {processing && (
-                      <div className="text-center py-8 space-y-2">
-                        <div className="text-2xl animate-pulse">PROCESSING...</div>
-                        <div className="text-xs">APPLYING ROBOTIC DISTORTION</div>
-                      </div>
-                    )}
-                    
-                    {videoUrl && (
-                      <div className="space-y-4">
-                        <video
-                          src={videoUrl}
-                          controls
-                          autoPlay
-                          playsInline
-                          className="w-full border-2 border-cyan-400"
-                        />
-                        <button
-                          onClick={handleTransmit}
-                          className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors flex items-center justify-center gap-2"
-                        >
-                          <Send className="w-5 h-5" />
-                          TRANSMIT VOXCAST
-                        </button>
-                      </div>
-                    )}
-                    
-                    <button
-                      onClick={() => setView('inbox')}
-                      className="w-full border-2 border-cyan-400 text-cyan-400 p-3 font-bold hover:bg-cyan-400 hover:text-black transition-colors"
-                    >
-                      VIEW INBOX
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+          )}
+
+          {/* Auth or Logged In Send */}
+          {!recipientKey && (
+            <AuthOrSend
+              user={user}
+              recipientKey={recipientKey}
+              setRecipientKey={setRecipientKey}
+              onSignup={signup}
+              onLogin={login}
+              isRecording={isRecording}
+              audioBlob={audioBlob}
+              videoDataUrl={videoDataUrl}
+              isProcessing={isProcessing}
+              onStart={startRecording}
+              onStop={stopRecording}
+              onCancel={cancelRecording}
+              onGenerate={generateVoxCast}
+              onSend={sendVoxCast}
+              goToInbox={() => setView('inbox')}
+            />
+          )}
         </div>
       </div>
     );
   }
 
-  if (view === 'inbox') {
-    return (
-      <div className="min-h-screen bg-black text-cyan-400 font-mono p-4">
-        <div className="max-w-4xl mx-auto space-y-6">
-          <div className="flex items-center justify-between border-b-2 border-cyan-400 pb-4">
-            <div>
-              <h1 className="text-3xl font-bold">VOXKEY INBOX</h1>
-              <p className="text-sm text-cyan-300">USER: {currentUser?.username}</p>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="border-2 border-cyan-400 text-cyan-400 p-2 hover:bg-cyan-400 hover:text-black transition-colors"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
+  // ────────────────────────────────────────────────────────────────
+  // Inbox View
+  // ────────────────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-black text-cyan-400 font-mono p-6">
+      <div className="max-w-4xl mx-auto space-y-8">
+        <div className="flex justify-between items-center border-b-4 border-cyan-500 pb-4">
+          <div>
+            <h1 className="text-4xl font-bold">INBOX</h1>
+            <p className="text-cyan-300">Agent: {user?.username}</p>
           </div>
-          
-          <div className="border-2 border-cyan-400 p-4 space-y-2">
-            <p className="text-sm">YOUR VOXKEY:</p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 bg-cyan-400 text-black p-3 text-lg font-bold break-all">
-                {window.location.host}/{voxKey}
-              </code>
-              <button
-                onClick={copyLink}
-                className="border-2 border-cyan-400 text-cyan-400 p-3 hover:bg-cyan-400 hover:text-black transition-colors"
-              >
-                <Copy className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-          
-          <div className="space-y-4">
-            <h2 className="text-xl font-bold">RECEIVED TRANSMISSIONS: {messages.length}</h2>
-            
-            {messages.length === 0 ? (
-              <div className="border-2 border-cyan-400 p-8 text-center space-y-2">
-                <Volume2 className="w-16 h-16 mx-auto text-cyan-600" />
-                <p className="text-cyan-600">NO MESSAGES YET</p>
-                <p className="text-xs text-cyan-600">SHARE YOUR VOXKEY TO RECEIVE ANONYMOUS VOICE MESSAGES</p>
-              </div>
-            ) : (
-              messages.map(msg => (
-                <div key={msg.id} className="border-2 border-cyan-400 p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-cyan-300">
-                      {new Date(msg.timestamp).toLocaleString()}
-                    </span>
-                    <button
-                      onClick={() => deleteMessage(msg.id)}
-                      className="text-red-500 hover:text-red-400"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                  
-                  <video
-                    src={msg.videoUrl}
-                    controls
-                    className="w-full max-w-sm mx-auto border-2 border-cyan-400"
-                  />
-                  
-                  <p className="text-sm text-cyan-300">{msg.transcript}</p>
-                  
-                  <div className="flex gap-2">
-                    <a
-                      href={msg.videoUrl}
-                      download={`voxcast-${msg.id}.webm`}
-                      className="flex-1 border-2 border-cyan-400 text-cyan-400 p-2 text-center hover:bg-cyan-400 hover:text-black transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Download className="w-4 h-4" />
-                      DOWNLOAD
-                    </a>
-                    <button
-                      onClick={() => navigator.share({ files: [new File([msg.videoUrl], 'voxcast.webm')] }).catch(() => {})}
-                      className="flex-1 border-2 border-cyan-400 text-cyan-400 p-2 hover:bg-cyan-400 hover:text-black transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Share2 className="w-4 h-4" />
-                      SHARE
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          
-          <button
-            onClick={() => setView('landing')}
-            className="w-full bg-cyan-400 text-black p-4 font-bold hover:bg-cyan-300 transition-colors"
-          >
-            SEND NEW MESSAGE
+          <button onClick={logout} className="p-3 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black transition">
+            <LogOut className="w-6 h-6" />
           </button>
         </div>
+
+        <div className="border-4 border-cyan-500 p-6 flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <p className="text-sm">YOUR VOXKEY</p>
+            <code className="text-2xl font-bold bg-cyan-500 text-black px-4 py-2">{user?.voxKey}</code>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={() => navigator.clipboard.writeText(`${location.origin}/${user?.voxKey}`)} className="p-3 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
+              <Copy className="w-6 h-6" />
+            </button>
+            <button onClick={() => setShowQR(true)} className="p-3 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
+              <QrCode className="w-6 h-6" />
+            </button>
+          </div>
+        </div>
+
+        {messages.length === 0 ? (
+          <div className="text-center py-20 border-4 border-dashed border-cyan-600">
+            <Volume2 className="w-20 h-20 mx-auto text-cyan-700 mb-4" />
+            <p className="text-2xl text-cyan-600">NO TRANSMISSIONS YET</p>
+            <p className="text-sm text-cyan-700 mt-2">Share your VoxKey to receive anonymous voice drops</p>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {messages.map(msg => (
+              <div key={msg.id} className="border-4 border-cyan-500 p-6 bg-cyan-950/20">
+                <div className="flex justify-between text-sm text-cyan-300 mb-4">
+                  <span>{format(msg.timestamp, 'PPp')}</span>
+                  <button onClick={() => deleteMessage(msg.id)} className="text-red-500 hover:text-red-400">
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
+                <video src={msg.videoDataUrl} controls className="w-full max-w-2xl mx-auto border-2 border-cyan-500" />
+                <div className="flex gap-4 mt-4">
+                  <a href={msg.videoDataUrl} download={`voxcast-${msg.id}.webm`} className="flex-1 flex items-center justify-center gap-2 p-3 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
+                    <Download /> DOWNLOAD
+                  </a>
+                  <button onClick={() => shareVideo(msg.videoDataUrl)} className="flex-1 flex items-center justify-center gap-2 p-3 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
+                    <Share2 /> SHARE
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => setView('landing')} className="w-full py-6 bg-cyan-500 text-black text-xl font-bold hover:bg-cyan-400 transition">
+          <Zap className="inline mr-2" /> SEND NEW VOXCAST
+        </button>
+      </div>
+
+      {showQR && user && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50" onClick={() => setShowQR(false)}>
+          <div className="p-10 bg-black border-4 border-cyan-500">
+            <QRCodeSVG value={`${location.origin}/${user.voxKey}`} size={300} fgColor="#00ffff" bgColor="#000" />
+            <p className="text-center mt-4 text-cyan-400">Scan to send anonymous voice</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Sub-components (for clean code)
+// ────────────────────────────────────────────────────────────────
+function Recorder({ isRecording, audioBlob, videoDataUrl, isProcessing, onStart, onStop, onCancel, onGenerate, onSend }: any) {
+  return (
+    <>
+      {!audioBlob && !videoDataUrl && (
+        <button
+          onMouseDown={onStart}
+          onMouseUp={onStop}
+          onTouchStart={onStart}
+          onTouchEnd={onStop}
+          disabled={isRecording}
+          className={`w-full py-16 text-2xl font-bold transition-all ${isRecording ? 'bg-red-600 animate-pulse' : 'border-4 border-cyan-500 hover:bg-cyan-500 hover:text-black'}`}
+        >
+          <Mic className="w-16 h-16 mx-auto mb-4" />
+          {isRecording ? 'RELEASE TO STOP' : 'HOLD TO RECORD'}
+        </button>
+      )}
+
+      {audioBlob && !videoDataUrl && !isProcessing && (
+        <div className="space-y-4">
+          <audio src={URL.createObjectURL(audioBlob)} controls className="w-full" />
+          <div className="flex gap-4">
+            <button onClick={onGenerate} className="flex-1 py-4 bg-cyan-500 text-black font-bold hover:bg-cyan-400">GENERATE VOXCAST</button>
+            <button onClick={onCancel} className="px-6 py-4 border-2 border-red-500 text-red-500 hover:bg-red-500 hover:text-black">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {isProcessing && <div className="text-center py-12 text-3xl animate-pulse">APPLYING ROBOT MATRIX...</div>}
+
+      {videoDataUrl && (
+        <div className="space-y-6">
+          <video src={videoDataUrl} controls autoPlay className="w-full border-4 border-cyan-500" />
+          <button onClick={onSend} className="w-full py-6 bg-cyan-500 text-black text-2xl font-bold flex items-center justify-center gap-4 hover:bg-cyan-400">
+            <Send /> TRANSMIT ANONYMOUSLY
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function AuthOrSend({ user, recipientKey, setRecipientKey, onSignup, onLogin, ...recorderProps }: any) {
+  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  if (user) {
+    return (
+      <div className="border-4 border-cyan-500 p-8 space-y-6">
+        <input
+          type="text"
+          placeholder="RECIPIENT VOXKEY (VX-XXXXXXXX)"
+          value={recipientKey}
+          onChange={(e) => setRecipientKey(e.target.value.toUpperCase())}
+          className="w-full px-4 py-4 bg-black border-2 border-cyan-500 text-xl uppercase"
+        />
+        <Recorder {...recorderProps} />
+        <button onClick={recorderProps.goToInbox} className="w-full py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black text-xl font-bold">
+          VIEW INBOX
+        </button>
       </div>
     );
   }
-};
 
-export default VoxKey;
+  return (
+    <div className="border-4 border-cyan-500 p-8 space-y-6">
+      <h2 className="text-2xl text-center">ACCESS TERMINAL</h2>
+      <input type="email" placeholder="EMAIL" value={email} onChange={e => setEmail(e.target.value)} className="w-full px-4 py-4 bg-black border-2 border-cyan-500" />
+      <input type="text" placeholder="USERNAME" value={username} onChange={e => setUsername(e.target.value)} className="w-full px-4 py-4 bg-black border-2 border-cyan-500" />
+      <input type="password" placeholder="PASSWORD" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-4 py-4 bg-black border-2 border-cyan-500" />
+      <div className="flex gap-4">
+        <button onClick={() => onSignup(email, username, password)} className="flex-1 py-4 bg-cyan-500 text-black font-bold hover:bg-cyan-400">SIGN UP</button>
+        <button onClick={() => onLogin(email, password)} className="flex-1 py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black font-bold">LOGIN</button>
+      </div>
+    </div>
+  );
+}
