@@ -193,7 +193,21 @@ export default function AnonymousVoiceApp() {
     if (recognitionRef.current) recognitionRef.current.stop();
   };
 
-  const sendMessage = async () => {
+
+
+  const playRobotic = (text, id) => {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 0.7;
+    u.pitch = 0.3;
+    u.volume = 0.9;
+    u.onstart = () => setIsPlaying(id);
+    u.onend = () => setIsPlaying(null);
+    window.speechSynthesis.speak(u);
+  };
+
+  // Auto-play robotic voice when sending
+  const sendMessageWithRoboticVoice = async () => {
     if (!audioBlob) return;
 
     const recipient = recipientUsername.trim();
@@ -219,7 +233,7 @@ export default function AnonymousVoiceApp() {
 
     const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
 
-    // Save message (no foreign key - just store recipient username as text)
+    // Save message
     const { error } = await supabase
       .from('messages')
       .insert({
@@ -230,29 +244,43 @@ export default function AnonymousVoiceApp() {
 
     if (error) {
       alert('Send failed: ' + error.message);
+      setLoading(false);
+      return;
+    }
+
+    // Play robotic voice preview before confirming
+    if (transcript) {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(transcript);
+      u.rate = 0.7;
+      u.pitch = 0.3;
+      u.volume = 0.9;
+      
+      u.onend = () => {
+        alert(`🎤 Anonymous voice note sent to @${recipient}!`);
+        setAudioBlob(null);
+        setAudioUrl(null);
+        setTranscript('');
+        
+        // If logged in and viewing own inbox, refresh
+        if (currentUser && recipient === currentUser.username) {
+          fetchMessages(currentUser.username);
+        }
+        setLoading(false);
+      };
+      
+      window.speechSynthesis.speak(u);
     } else {
       alert(`🎤 Anonymous voice note sent to @${recipient}!`);
       setAudioBlob(null);
       setAudioUrl(null);
       setTranscript('');
       
-      // If logged in and viewing own inbox, refresh
       if (currentUser && recipient === currentUser.username) {
         fetchMessages(currentUser.username);
       }
+      setLoading(false);
     }
-    setLoading(false);
-  };
-
-  const playRobotic = (text, id) => {
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 0.7;
-    u.pitch = 0.3;
-    u.volume = 0.9;
-    u.onstart = () => setIsPlaying(id);
-    u.onend = () => setIsPlaying(null);
-    window.speechSynthesis.speak(u);
   };
 
   const copyLink = () => {
@@ -471,7 +499,7 @@ export default function AnonymousVoiceApp() {
                     </div>
                   )}
                   <button
-                    onClick={sendMessage}
+                    onClick={sendMessageWithRoboticVoice}
                     disabled={loading}
                     className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 disabled:opacity-70 hover:scale-105 transition-transform"
                   >
