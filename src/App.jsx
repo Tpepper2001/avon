@@ -24,27 +24,31 @@ export default function AnonymousVoiceApp() {
   const [isPlaying, setIsPlaying] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sendMode, setSendMode] = useState('anonymous'); // 'anonymous' or 'auth'
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
 
-  // Check for recipient in URL or load current user
+  // Check for recipient in URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sendTo = params.get('send_to');
     
     if (sendTo) {
+      // If there's a send_to parameter, show recording page for that user
       setRecipientUsername(sendTo);
-      setView('create');
-    }
-
-    // Check if user is logged in
-    const savedUser = localStorage.getItem('anon-voice-user');
-    if (savedUser) {
-      const user = JSON.parse(savedUser);
-      setCurrentUser(user);
-      fetchMessages(user.username);
+      setSendMode('anonymous');
+      setAuthView(''); // Skip auth screens
+    } else {
+      // Check if user is logged in
+      const savedUser = localStorage.getItem('anon-voice-user');
+      if (savedUser) {
+        const user = JSON.parse(savedUser);
+        setCurrentUser(user);
+        fetchMessages(user.username);
+        setAuthView('');
+      }
     }
   }, []);
 
@@ -103,6 +107,7 @@ export default function AnonymousVoiceApp() {
     setLoading(false);
     setUsername('');
     setPassword('');
+    setAuthView('');
   };
 
   const handleLogin = async () => {
@@ -129,6 +134,7 @@ export default function AnonymousVoiceApp() {
     setLoading(false);
     setUsername('');
     setPassword('');
+    setAuthView('');
   };
 
   const handleLogout = () => {
@@ -136,6 +142,7 @@ export default function AnonymousVoiceApp() {
     localStorage.removeItem('anon-voice-user');
     setMessages([]);
     setView('create');
+    setAuthView('landing');
   };
 
   const startRecording = async () => {
@@ -189,14 +196,14 @@ export default function AnonymousVoiceApp() {
   const sendMessage = async () => {
     if (!audioBlob) return;
 
-    setLoading(true);
-    const recipient = recipientUsername || currentUser?.username;
+    const recipient = recipientUsername.trim();
 
     if (!recipient) {
       alert('Please enter a recipient username');
-      setLoading(false);
       return;
     }
+
+    setLoading(true);
 
     // Upload audio
     const fileName = `voice-${Date.now()}.webm`;
@@ -212,7 +219,7 @@ export default function AnonymousVoiceApp() {
 
     const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
 
-    // Save message
+    // Save message (no foreign key - just store recipient username as text)
     const { error } = await supabase
       .from('messages')
       .insert({
@@ -224,12 +231,15 @@ export default function AnonymousVoiceApp() {
     if (error) {
       alert('Send failed: ' + error.message);
     } else {
-      alert(`🎤 Voice note sent to @${recipient}!`);
+      alert(`🎤 Anonymous voice note sent to @${recipient}!`);
       setAudioBlob(null);
       setAudioUrl(null);
       setTranscript('');
-      setRecipientUsername('');
-      if (recipient === currentUser?.username) fetchMessages(currentUser.username);
+      
+      // If logged in and viewing own inbox, refresh
+      if (currentUser && recipient === currentUser.username) {
+        fetchMessages(currentUser.username);
+      }
     }
     setLoading(false);
   };
@@ -260,7 +270,7 @@ export default function AnonymousVoiceApp() {
 
   // ════════════════════════════════════════ LANDING PAGE ════════════════════════════════════════
 
-  if (!currentUser && authView === 'landing') {
+  if (!currentUser && authView === 'landing' && !recipientUsername) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-6">
         <div className="bg-white rounded-3xl shadow-2xl p-12 max-w-md w-full text-center">
@@ -271,7 +281,7 @@ export default function AnonymousVoiceApp() {
             AnonVox
           </h1>
           <p className="text-gray-600 text-lg mb-10 leading-relaxed">
-            Send anonymous voice messages<br />
+            Send & receive anonymous voice messages<br />
             with <span className="font-bold text-purple-600">robotic playback</span> 🤖
           </p>
           <div className="space-y-4">
@@ -417,7 +427,76 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // ════════════════════════════════════════ MAIN APP ════════════════════════════════════════
+  // ════════════════════════════════════════ ANONYMOUS SEND PAGE ════════════════════════════════════════
+
+  if (recipientUsername && !currentUser) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-6">
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-white rounded-3xl shadow-2xl overflow-hidden p-10">
+            <div className="text-center mb-8">
+              <h1 className="text-5xl font-black mb-4 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Send to @{recipientUsername}
+              </h1>
+              <p className="text-gray-600 text-lg">
+                Record an anonymous voice note 🎤
+              </p>
+            </div>
+
+            <div className="max-w-lg mx-auto text-center">
+              <button
+                onMouseDown={startRecording}
+                onMouseUp={stopRecording}
+                onTouchStart={startRecording}
+                onTouchEnd={stopRecording}
+                className={`w-56 h-56 rounded-full shadow-2xl transition-all ${
+                  isRecording
+                    ? 'bg-red-500 animate-pulse scale-110'
+                    : 'bg-gradient-to-br from-indigo-500 to-purple-500 hover:scale-110'
+                } flex items-center justify-center mx-auto`}
+              >
+                <Mic className="w-28 h-28 text-white" />
+              </button>
+              <p className="mt-8 text-2xl text-gray-700 font-medium">
+                {isRecording ? '🎤 Recording… Release to stop' : '👆 Hold to record'}
+              </p>
+
+              {(audioUrl || transcript) && (
+                <div className="mt-10 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
+                  {audioUrl && <audio controls src={audioUrl} className="w-full mb-6 rounded-xl" />}
+                  {transcript && (
+                    <div className="bg-white rounded-xl p-6 mb-6">
+                      <p className="text-sm text-gray-500 mb-2 font-bold">Transcription:</p>
+                      <p className="text-left text-gray-800 font-medium">"{transcript}"</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={sendMessage}
+                    disabled={loading}
+                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 disabled:opacity-70 hover:scale-105 transition-transform"
+                  >
+                    <Send className="w-7 h-7" />
+                    {loading ? 'Sending…' : 'Send Anonymously 🚀'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="text-center mt-8">
+              <button
+                onClick={() => setAuthView('signup')}
+                className="text-purple-600 hover:text-purple-700 font-medium"
+              >
+                Want your own inbox? Create an account →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════ LOGGED IN MAIN APP ════════════════════════════════════════
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-6">
@@ -436,26 +515,17 @@ export default function AnonymousVoiceApp() {
                   className="flex items-center gap-2 bg-white/20 px-5 py-3 rounded-xl hover:bg-white/30 transition"
                 >
                   {copied ? <Check className="w-5 h-5" /> : <Share2 className="w-5 h-5" />}
-                  <span className="font-medium">{copied ? 'Copied!' : 'Share'}</span>
+                  <span className="font-medium">{copied ? 'Copied!' : 'Share Link'}</span>
                 </button>
                 <button
                   onClick={handleLogout}
                   className="flex items-center gap-2 bg-white/20 px-5 py-3 rounded-xl hover:bg-white/30 transition"
                 >
                   <LogOut className="w-5 h-5" />
-                  <span className="font-medium">Logout</span>
                 </button>
               </div>
             </div>
             <div className="flex gap-4">
-              <button
-                onClick={() => setView('create')}
-                className={`px-8 py-4 rounded-xl font-bold transition-all ${
-                  view === 'create' ? 'bg-white text-purple-600 shadow-lg scale-105' : 'bg-white/20 hover:bg-white/30'
-                }`}
-              >
-                📤 Send Voice
-              </button>
               <button
                 onClick={() => { setView('inbox'); fetchMessages(currentUser.username); }}
                 className={`px-8 py-4 rounded-xl font-bold flex items-center gap-3 transition-all ${
@@ -463,103 +533,52 @@ export default function AnonymousVoiceApp() {
                 }`}
               >
                 <Inbox className="w-6 h-6" />
-                Inbox ({messages.length})
+                My Inbox ({messages.length})
               </button>
             </div>
           </div>
 
-          {/* Main Content */}
+          {/* Main Content - INBOX ONLY */}
           <div className="p-10">
-            {view === 'create' ? (
-              <div className="max-w-lg mx-auto text-center">
-                <h2 className="text-3xl font-bold text-gray-800 mb-4">Send Anonymous Voice Note</h2>
-                
-                <input
-                  type="text"
-                  value={recipientUsername}
-                  onChange={(e) => setRecipientUsername(e.target.value)}
-                  placeholder="Recipient username (optional - defaults to yourself)"
-                  className="w-full px-6 py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-lg mb-8"
-                />
-
-                <button
-                  onMouseDown={startRecording}
-                  onMouseUp={stopRecording}
-                  onTouchStart={startRecording}
-                  onTouchEnd={stopRecording}
-                  className={`w-56 h-56 rounded-full shadow-2xl transition-all ${
-                    isRecording
-                      ? 'bg-red-500 animate-pulse scale-110'
-                      : 'bg-gradient-to-br from-indigo-500 to-purple-500 hover:scale-110'
-                  } flex items-center justify-center`}
-                >
-                  <Mic className="w-28 h-28 text-white" />
-                </button>
-                <p className="mt-8 text-2xl text-gray-700 font-medium">
-                  {isRecording ? '🎤 Recording… Release to stop' : '👆 Hold to record'}
-                </p>
-
-                {(audioUrl || transcript) && (
-                  <div className="mt-10 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
-                    {audioUrl && <audio controls src={audioUrl} className="w-full mb-6 rounded-xl" />}
-                    {transcript && (
-                      <div className="bg-white rounded-xl p-6 mb-6">
-                        <p className="text-sm text-gray-500 mb-2 font-bold">Transcription:</p>
-                        <p className="text-left text-gray-800 font-medium">"{transcript}"</p>
-                      </div>
-                    )}
-                    <button
-                      onClick={sendMessage}
-                      disabled={loading}
-                      className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 rounded-2xl font-bold flex items-center justify-center gap-3 disabled:opacity-70 hover:scale-105 transition-transform"
-                    >
-                      <Send className="w-7 h-7" />
-                      {loading ? 'Sending…' : 'Send Voice Note 🚀'}
-                    </button>
-                  </div>
-                )}
+            <h2 className="text-3xl font-bold text-gray-800 mb-8">🤖 Your Anonymous Voice Inbox</h2>
+            {messages.length === 0 ? (
+              <div className="text-center py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl">
+                <Inbox className="w-24 h-24 text-gray-300 mx-auto mb-6" />
+                <p className="text-2xl mb-4 text-gray-600 font-medium">No messages yet</p>
+                <p className="text-gray-500 mb-6">Share your link to receive voice notes:</p>
+                <div className="bg-white px-6 py-4 rounded-xl inline-block shadow-md">
+                  <p className="font-mono text-purple-600 font-bold break-all">
+                    {window.location.origin}?send_to={currentUser.username}
+                  </p>
+                </div>
               </div>
             ) : (
-              <div>
-                <h2 className="text-3xl font-bold text-gray-800 mb-8">🤖 Your Anonymous Voice Inbox</h2>
-                {messages.length === 0 ? (
-                  <div className="text-center py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl">
-                    <Inbox className="w-24 h-24 text-gray-300 mx-auto mb-6" />
-                    <p className="text-2xl mb-4 text-gray-600 font-medium">No messages yet</p>
-                    <p className="text-gray-500 mb-6">Share your link to receive voice notes:</p>
-                    <p className="font-mono bg-white px-6 py-4 rounded-xl inline-block text-purple-600 font-bold shadow-md">
-                      {window.location.origin}?send_to={currentUser.username}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg hover:shadow-xl transition-shadow">
-                        {msg.audio_url && <audio controls src={msg.audio_url} className="w-full mb-6 rounded-xl" />}
-                        {msg.text && (
-                          <div className="bg-white rounded-xl p-6 mb-6 shadow-md">
-                            <p className="text-xl text-gray-800 font-medium">"{msg.text}"</p>
-                          </div>
-                        )}
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-500 font-medium">
-                            📅 {new Date(msg.created_at).toLocaleString()}
-                          </span>
-                          {msg.text && (
-                            <button
-                              onClick={() => playRobotic(msg.text, msg.id)}
-                              disabled={isPlaying === msg.id}
-                              className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl flex items-center gap-3 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg"
-                            >
-                              <Play className="w-5 h-5" />
-                              {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Robotic Voice'}
-                            </button>
-                          )}
-                        </div>
+              <div className="space-y-6">
+                {messages.map((msg) => (
+                  <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg hover:shadow-xl transition-shadow">
+                    {msg.audio_url && <audio controls src={msg.audio_url} className="w-full mb-6 rounded-xl" />}
+                    {msg.text && (
+                      <div className="bg-white rounded-xl p-6 mb-6 shadow-md">
+                        <p className="text-xl text-gray-800 font-medium">"{msg.text}"</p>
                       </div>
-                    ))}
+                    )}
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-500 font-medium">
+                        📅 {new Date(msg.created_at).toLocaleString()}
+                      </span>
+                      {msg.text && (
+                        <button
+                          onClick={() => playRobotic(msg.text, msg.id)}
+                          disabled={isPlaying === msg.id}
+                          className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl flex items-center gap-3 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg"
+                        >
+                          <Play className="w-5 h-5" />
+                          {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Robotic Voice'}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
             )}
           </div>
