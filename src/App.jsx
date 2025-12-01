@@ -4,8 +4,8 @@ import { Mic, Play, Send, Copy, Check, Inbox, Share2 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -255,7 +255,7 @@ export default function AnonymousVoiceApp() {
                 {(audioUrl || transcript) && (
                   <div className="mt-10 bg-gray-50 rounded-3xl p-8">
                     {audioUrl && <audio controls src={audioUrl} className="w-full mb-6" />}
-                    {transcript && <p className="text-left text-gray-800 font-medium mb-6">“{transcript}”</p>}
+                    {transcript && <p className="text-left text-gray-800 font-medium mb-6">"{transcript}"</p>}
                     <button
                       onClick={sendMessage}
                       disabled={loading}
@@ -282,7 +282,7 @@ export default function AnonymousVoiceApp() {
                     {messages.map((msg) => (
                       <div key={msg.id} className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
                         {msg.audio_url && <audio controls src={msg.audio_url} className="w-full mb-6 rounded-xl" />}
-                        {msg.text && <p className="text-xl text-gray-800 font-medium mb-6">“{msg.text}”</p>}
+                        {msg.text && <p className="text-xl text-gray-800 font-medium mb-6">"{msg.text}"</p>}
                         <div className="flex justify-between items-center">
                           <span className="text-sm text-gray-500">
                             {new Date(msg.created_at).toLocaleString()}
