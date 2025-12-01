@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
 const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseAnonKey = 'sb_publishable_0TGwu6pOtsZCEzA00vMveA_OVhfKJ_I';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -206,9 +206,12 @@ export default function AnonymousVoiceApp() {
     window.speechSynthesis.speak(u);
   };
 
-  // Auto-play robotic voice when sending
+  // Convert text to robotic audio and send ONLY the robotic version
   const sendMessageWithRoboticVoice = async () => {
-    if (!audioBlob) return;
+    if (!transcript) {
+      alert('Please record a voice message first');
+      return;
+    }
 
     const recipient = recipientUsername.trim();
 
@@ -219,66 +222,48 @@ export default function AnonymousVoiceApp() {
 
     setLoading(true);
 
-    // Upload audio
-    const fileName = `voice-${Date.now()}.webm`;
-    const { error: uploadError } = await supabase.storage
-      .from('voices')
-      .upload(fileName, audioBlob, { contentType: 'audio/webm', upsert: false });
+    // Generate robotic voice audio
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(transcript);
+    utterance.rate = 0.7;
+    utterance.pitch = 0.3;
+    utterance.volume = 0.9;
 
-    if (uploadError) {
-      alert('Upload failed: ' + uploadError.message);
-      setLoading(false);
-      return;
-    }
-
-    const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-
-    // Save message
-    const { error } = await supabase
-      .from('messages')
-      .insert({
-        username: recipient,
-        text: transcript || null,
-        audio_url: publicUrl,
-      });
-
-    if (error) {
-      alert('Send failed: ' + error.message);
-      setLoading(false);
-      return;
-    }
-
-    // Play robotic voice preview before confirming
-    if (transcript) {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(transcript);
-      u.rate = 0.7;
-      u.pitch = 0.3;
-      u.volume = 0.9;
+    // Create a temporary audio context to capture the robotic voice
+    try {
+      // For now, just save the text and play it robotically on the receiver's end
+      // (Browser TTS can't be captured directly without complex audio routing)
       
-      u.onend = () => {
-        alert(`🎤 Anonymous voice note sent to @${recipient}!`);
+      const { error } = await supabase
+        .from('messages')
+        .insert({
+          username: recipient,
+          text: transcript,
+          audio_url: null, // Only store text, play robotically on delivery
+        });
+
+      if (error) {
+        alert('Send failed: ' + error.message);
+        setLoading(false);
+        return;
+      }
+
+      // Preview the robotic voice for sender
+      utterance.onend = () => {
+        alert(`🤖 Anonymous robotic voice sent to @${recipient}!`);
         setAudioBlob(null);
         setAudioUrl(null);
         setTranscript('');
         
-        // If logged in and viewing own inbox, refresh
         if (currentUser && recipient === currentUser.username) {
           fetchMessages(currentUser.username);
         }
         setLoading(false);
       };
       
-      window.speechSynthesis.speak(u);
-    } else {
-      alert(`🎤 Anonymous voice note sent to @${recipient}!`);
-      setAudioBlob(null);
-      setAudioUrl(null);
-      setTranscript('');
-      
-      if (currentUser && recipient === currentUser.username) {
-        fetchMessages(currentUser.username);
-      }
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      alert('Failed to send: ' + err.message);
       setLoading(false);
     }
   };
@@ -491,11 +476,11 @@ export default function AnonymousVoiceApp() {
 
               {(audioUrl || transcript) && (
                 <div className="mt-10 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
-                  {audioUrl && <audio controls src={audioUrl} className="w-full mb-6 rounded-xl" />}
                   {transcript && (
                     <div className="bg-white rounded-xl p-6 mb-6">
                       <p className="text-sm text-gray-500 mb-2 font-bold">Transcription:</p>
                       <p className="text-left text-gray-800 font-medium">"{transcript}"</p>
+                      <p className="text-xs text-purple-600 mt-2">🤖 Will be sent as robotic voice</p>
                     </div>
                   )}
                   <button
@@ -504,7 +489,7 @@ export default function AnonymousVoiceApp() {
                     className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 disabled:opacity-70 hover:scale-105 transition-transform"
                   >
                     <Send className="w-7 h-7" />
-                    {loading ? 'Sending…' : 'Send Anonymously 🚀'}
+                    {loading ? 'Sending…' : 'Send as Robotic Voice 🤖'}
                   </button>
                 </div>
               )}
@@ -584,7 +569,6 @@ export default function AnonymousVoiceApp() {
               <div className="space-y-6">
                 {messages.map((msg) => (
                   <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg hover:shadow-xl transition-shadow">
-                    {msg.audio_url && <audio controls src={msg.audio_url} className="w-full mb-6 rounded-xl" />}
                     {msg.text && (
                       <div className="bg-white rounded-xl p-6 mb-6 shadow-md">
                         <p className="text-xl text-gray-800 font-medium">"{msg.text}"</p>
@@ -601,7 +585,7 @@ export default function AnonymousVoiceApp() {
                           className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl flex items-center gap-3 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg"
                         >
                           <Play className="w-5 h-5" />
-                          {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Robotic Voice'}
+                          {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Play Robotic Voice'}
                         </button>
                       )}
                     </div>
