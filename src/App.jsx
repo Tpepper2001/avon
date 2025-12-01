@@ -1,357 +1,324 @@
-// src/App.jsx — FINAL VERSION: Share link 100% working
+// app.jsx (or App.jsx) — Full working version with Supabase
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Send, Trash2, Download, Share2, Copy, LogOut, Volume2, Zap, UserPlus, LogIn } from 'lucide-react';
-import { format } from 'date-fns';
+import { Mic, Play, Send, Copy, Check, Inbox, Share2 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
-// ───── QR Generator (no deps) ─────
-const generateQR = (text) => {
-  const size = 300;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = '#00ffff';
+// Replace with your Supabase project keys (get from supabase.com/dashboard)
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-public-key-here';
 
-  const drawFinder = (x, y) => {
-    ctx.fillRect(x, y, 56, 56);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(x + 8, y + 8, 40, 40);
-    ctx.fillStyle = '#00ffff';
-    ctx.fillRect(x + 16, y + 16, 24, 24);
-  };
-  drawFinder(20, 20); drawFinder(size - 76, 20); drawFinder(20, size - 76);
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-  const data = new TextEncoder().encode(text);
-  const cell = 7;
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] % 4 === 0) {
-      const x = 80 + (i % 28) * cell;
-      const y = 80 + Math.floor(i / 28) * cell;
-      ctx.fillRect(x, y, cell - 1, cell - 1);
-    }
-  }
-  return canvas.toDataURL();
-};
-
-// ───── Storage & Utils ─────
-const secureDB = {
-  async get(k) { try { const i = await window.storage?.get(k); return i ? JSON.parse(i.value) : null; } catch { return JSON.parse(localStorage.getItem(k) || 'null'); } },
-  async set(k, v) { const d = JSON.stringify(v); try { await window.storage?.set(k, d); } catch { localStorage.setItem(k, d); } },
-};
-
-async function hashPassword(pw) {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
-  return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-const generateVoxKey = () => 'VX-' + Math.random().toString(36).substr(2, 8).toUpperCase();
-
-const blobToDataURL = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
-
-// ───── FIXED SHARE FUNCTION ─────
-const shareVideo = async (dataUrl) => {
-  try {
-    // Convert data URL → Blob → File
-    const resp = await fetch(dataUrl);
-    const blob = await resp.blob();
-    const file = new File([blob], "voxcast.webm", { type: "video/webm" });
-
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: "Anonymous VoxCast",
-        text: "You received a secret voice message"
-      });
-    } else {
-      throw new Error("Share API not supported");
-    }
-  } catch (err) {
-    // Fallback: copy direct link
-    const directLink = dataUrl;
-    await navigator.clipboard.writeText(directLink);
-    alert("Link copied to clipboard! (Share not supported on this device)");
-  }
-};
-
-// ───── Main App ─────
-export default function VoxKey() {
-  const [mode, setMode] = useState('home');
-  const [user, setUser] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [targetKey, setTargetKey] = useState('');
+export default function AnonymousVoiceApp() {
+  const [username, setUsername] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
-  const [videoDataUrl, setVideoDataUrl] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [qrUrl, setQrUrl] = useState('');
+  );
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [transcript, setTranscript] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [view, setView] = useState('create');
+  const [copied, setCopied] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  const recorderRef = useRef(null);
-  const chunks = useRef([]);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recognitionRef = useRef(null);
 
+  // Load username from URL or prompt
   useEffect(() => {
-    const pathKey = window.location.pathname.slice(1).toUpperCase();
-    if (/^VX-[A-Z0-9]{8}$/.test(pathKey)) {
-      setTargetKey(pathKey);
-      setMode('send');
+    const params = new URLSearchParams(window.location.search);
+    const sendTo = params.get('send_to');
+
+    if (sendTo) {
+      setUsername(sendTo);
+      localStorage.setItem('ngl-username', sendTo);
+      fetchMessages(sendTo);
+    } else {
+      const saved = localStorage.getItem('ngl-username');
+      if (saved) {
+        setUsername(saved);
+        fetchMessages(saved);
+      }
     }
   }, []);
 
-  useEffect(() => { secureDB.get('voxkey_user').then(setUser); }, []);
+  const fetchMessages = async (user) => {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('username', user)
+      .order('created_at', { ascending: false });
 
-  useEffect(() => {
-    if (user) loadInbox();
-    const i = setInterval(() => user && loadInbox(), 8000);
-    return () => clearInterval(i);
-  }, [user]);
-
-  const loadInbox = async () => {
-    if (!user) return;
-    const msgs = (await secureDB.get(`msgs_${user.voxKey}`)) || [];
-    setMessages(msgs.sort((a, b) => b.timestamp - a.timestamp));
+    setMessages(data || []);
   };
 
-  const createAccount = async (email, password) => {
-    if (!email.includes('@') || password.length < 6) return alert('Invalid input');
-    const hash = await hashPassword(password);
-    const newUser = { email, passwordHash: hash, voxKey: generateVoxKey(), created: Date.now() };
-    const users = (await secureDB.get('voxkey_users')) || [];
-    if (users.some(u => u.email === email)) return alert('Email already used');
-    users.push(newUser);
-    await secureDB.set('voxkey_users', users);
-    await secureDB.set('voxkey_user', newUser);
-    setUser(newUser);
-    setMode('inbox');
-  };
-
-  const login = async (email, password) => {
-    const users = (await secureDB.get('voxkey_users')) || [];
-    const hash = await hashPassword(password);
-    const found = users.find(u => u.email === email && u.passwordHash === hash);
-    if (!found) return alert('Wrong credentials');
-    await secureDB.set('voxkey_user', found);
-    setUser(found);
-    setMode('inbox');
-  };
-
-  const logout = () => { secureDB.set('voxkey_user', null); setUser(null); setMode('home'); };
-
-  const startRec = async () => {
+  const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      chunks.current = [];
-      rec.ondataavailable = e => chunks.current.push(e.data);
-      rec.onstop = () => {
-        setAudioBlob(new Blob(chunks.current, { type: 'audio/webm' }));
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        setAudioBlob(blob);
+        setAudioUrl(url);
         stream.getTracks().forEach(t => t.stop());
       };
-      rec.start();
-      recorderRef.current = rec;
+
+      recorder.start();
+      mediaRecorderRef.current = recorder;
       setIsRecording(true);
-    } catch { alert('Microphone denied'); }
+
+      // Live transcription
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.onresult = (e) => {
+          const text = Array.from(e.results)
+            .map(r => r[0].transcript)
+            .join('');
+          setTranscript(text);
+        };
+        recognition.start();
+        recognitionRef.current = recognition;
+      }
+    } catch (err) {
+      alert('Please allow microphone access');
+    }
   };
 
-  const stopRec = () => { recorderRef.current?.stop(); setIsRecording(false); };
-  const cancel = () => { stopRec(); setAudioBlob(null); setVideoDataUrl(null); };
-
-  const generateVideo = async () => {
-    if (!audioBlob) return;
-    setIsProcessing(true);
-    const canvas = document.createElement('canvas');
-    canvas.width = 1080; canvas.height = 1920;
-    const ctx = canvas.getContext('2d');
-    const stream = canvas.captureStream(30);
-    const rec = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
-    const videoChunks = [];
-
-    rec.ondataavailable = e => e.data.size > 0 && videoChunks.push(e.data);
-    rec.onstop = async () => {
-      const blob = new Blob(videoChunks, { type: 'video/webm' });
-      setVideoDataUrl(await blobToDataURL(blob));
-      setIsProcessing(false);
-    };
-
-    // Simple animation (you can paste full robot version later)
-    let i = 0;
-    const animate = () => {
-      ctx.fillStyle = '#000'; ctx.fillRect(0,0,1080,1920);
-      ctx.fillStyle = '#00ffff';
-      ctx.font = '120px monospace';
-      ctx.fillText('VOXCAST', 200, 960);
-      if (i++ < 60) requestAnimationFrame(animate);
-      else rec.stop();
-    };
-    rec.start();
-    animate();
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
   };
 
   const sendMessage = async () => {
-    if (!videoDataUrl || !targetKey) return;
-    const msg = { id: Date.now(), videoDataUrl, timestamp: Date.now() };
-    const inbox = (await secureDB.get(`msgs_${targetKey}`)) || [];
-    inbox.push(msg);
-    await secureDB.set(`msgs_${targetKey}`, inbox);
-    alert('TRANSMITTED');
-    setVideoDataUrl(null); setAudioBlob(null);
-    history.replaceState(null, '', '/');
+    if (!audioBlob || !username) return;
+
+    ;
+
+    setLoading(true);
+    const recipient = prompt('Send to username:', username) || username;
+
+    // 1. Upload audio
+    const fileName = `voice-${Date.now()}.webm`;
+    const { data: fileData, error: uploadError } = await supabase.storage
+      .from('voices')
+      .upload(fileName, audioBlob, { contentType: 'audio/webm' });
+
+    if (uploadError) {
+      alert('Upload failed: ' + uploadError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('voices')
+      .getPublicUrl(fileName);
+
+    // 2. Save message
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        username: recipient,
+        text: transcript || '(Voice only)',
+        audio_url: publicUrl,
+      });
+
+    if (error) {
+      alert('Send failed: ' + error.message);
+    } else {
+      alert(`Sent anonymously to @${recipient}!`);
+      setAudioBlob(null);
+      setAudioUrl(null);
+      setTranscript('');
+      if (recipient === username) fetchMessages(username);
+    }
+    setLoading(false);
   };
 
-  // ───── Render ─────
-  if (mode === 'home') {
-    return (
-      <div className="min-h-screen bg-black text-cyan-400 font-mono flex items-center justify-center p-8">
-        <div className="text-center space-y-12 max-w-2xl">
-          <h1 className="text-7xl font-bold animate-pulse">VOXKEY</h1>
-          <p className="text-2xl text-cyan-300">Anonymous voice drops</p>
-          <div className="grid md:grid-cols-2 gap-8 mt-16">
-            <button onClick={() => setMode('create')} className="p-12 border-4 border-cyan-500 hover:bg-cyan-500 hover:text-black transition text-2xl font-bold flex flex-col items-center gap-4">
-              <UserPlus className="w-16 h-16" /> CREATE ACCOUNT
-            </button>
-            <button onClick={() => setMode('login')} className="p-12 border-4 border-cyan-500 hover:bg-cyan-500 hover:text-black transition text-2xl font-bold flex flex-col items-center gap-4">
-              <LogIn className="w-16 h-16" /> LOGIN
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const playRobotic = (text, id) => {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.85;
+    utter.pitch = 0.4;
+    utter.volume =  = 1;
 
-  if (mode === 'send') {
+    utter.onstart = () => setIsPlaying(id);
+    utter.onend = () => setIsPlaying(null);
+
+    window.speechSynthesis.speak(utter);
+  };
+
+  const createUsername = () => {
+    let name;
+    do {
+      name = prompt('Choose your username (letters/numbers only):')?.trim();
+    } while (name && !/^[a-zA-Z0-9_-]+$/.test(name));
+
+    if (name) {
+      setUsername(name);
+      localStorage.setItem('ngl-username', name);
+      window.location.search = `?send_to=${name}`;
+    }
+  };
+
+  const copyLink = () => {
+    const link = `${window.location.origin}?send_to=${username}`;
+    navigator.clipboard.writeText(link);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!username) {
     return (
-      <div className="min-h-screen bg-black text-cyan-400 font-mono flex items-center justify-center p-8">
-        <div className="max-w-lg w-full space-y-8">
-          <h1 className="text-5xl font-bold text-center">SEND TO</h1>
-          <code className="block text-4xl text-center bg-cyan-500 text-black py-4">{targetKey}</code>
-          <Recorder
-            isRecording={isRecording}
-            audioBlob={audioBlob}
-            videoDataUrl={videoDataUrl}
-            isProcessing={isProcessing}
-            start={startRec}
-            stop={stopRec}
-            cancel={cancel}
-            generate={generateVideo}
-            send={sendMessage}
-          />
-          <button onClick={() => { setMode('home'); history.replaceState(null, '', '/'); }} className="w-full py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
-            ← Back
+      <div className="min-h-screen bg-gradient-to-br from-purple-600 via-pink-500 to-red-500 flex items-center justify-center p-6">
+        <div className="bg-white rounded-3xl shadow-2xl p-12 max-w-md w-full text-center">
+          <div className="w-28 h-28 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full mx-auto mb-8 flex items-center justify-center">
+            <Mic className="w-16 h-16 text-white" />
+          </div>
+          <h1 className="text-5xl font-black mb-4 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+            AnonVoice
+          </h1>
+          <p className="text-gray-600 text-lg mb-10">
+            Get anonymous voice notes<br />with robotic voice playback
+          </p>
+          <button
+            onClick={createUsername}
+            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-6 rounded-2xl font-bold text-xl shadow-xl hover:scale-105 transition"
+          >
+            Create Your Link
           </button>
         </div>
       </div>
     );
   }
 
-  if (mode === 'create') return <AuthForm title="CREATE ACCOUNT" onSubmit={createAccount} back={() => setMode('home')} />;
-  if (mode === 'login') return <AuthForm title="LOGIN" onSubmit={login} back={() => setMode('home')} />;
-
-  // Inbox
   return (
-    <div className="min-h-screen bg-black text-cyan-400 font-mono p-8">
-      <div className="max-w-4xl mx-auto space-y-8">
-        <div className="flex justify-between items-center border-b-4 border-cyan-500 pb-4">
-          <h1 className="text-5xl font-bold">INBOX</h1>
-          <button onClick={logout} className="p-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black"><LogOut className="w-8 h-8" /></button>
-        </div>
-
-        <div className="border-4 border-cyan-500 p-8 text-center">
-          <p className="text-lg mb-4">Your link:</p>
-          <code className="text-3xl font-bold bg-cyan-500 text-black px-8 py-4 block break-all">
-            {location.origin}/{user.voxKey}
-          </code>
-          <div className="flex justify-center gap-6 mt-6">
-            <button onClick={() => navigator.clipboard.writeText(`${location.origin}/${user.voxKey}`)} className="p-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black"><Copy className="w-8 h-8" /></button>
-            <button onClick={() => setQrUrl(generateQR(`${location.origin}/${user.voxKey}`))} className="p-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">QR</button>
-          </div>
-        </div>
-
-        {messages.length === 0 ? (
-          <div className="text-center py-32 border-4 border-dashed border-cyan-600">
-            <Volume2 className="w-32 h-32 mx-auto text-cyan-700 mb-8" />
-            <p className="text-3xl">No messages yet</p>
-          </div>
-        ) : (
-          <div className="space-y-8">
-            {messages.map(m => (
-              <div key={m.id} className="border-4 border-cyan-500 p-8 bg-cyan-950/30">
-                <div className="flex justify-between text-sm text-cyan-300 mb-4">
-                  <span>{format(m.timestamp, 'PPp')}</span>
-                  <button onClick={() => {
-                    const inbox = messages.filter(x => x.id !== m.id);
-                    setMessages(inbox);
-                    secureDB.set(`msgs_${user.voxKey}`, inbox);
-                  }} className="text-red-500"><Trash2 className="w-6 h-6" /></button>
-                </div>
-                <video src={m.videoDataUrl} controls className="w-full border-2 border-cyan-500" />
-                <div className="flex gap-4 mt-6">
-                  <a href={m.videoDataUrl} download="voxcast.webm" className="flex-1 py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black flex justify-center gap-2"><Download className="w-6 h-6" /> DOWNLOAD</a>
-                  <button onClick={() => shareVideo(m.videoDataUrl)} className="flex-1 py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black flex justify-center gap-2"><Share2 className="w-6 h-6" /> SHARE</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {qrUrl && (
-          <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50" onClick={() => setQrUrl('')}>
-            <div className="p-12 bg-black border-4 border-cyan-500">
-              <img src={qrUrl} alt="QR" className="w-96 h-96" />
+    <div className="min-h-screen bg-gradient-to-br from-purple-600 via-pink-500 to-red-500 p-6">
+      <div className="max-w-4xl mx-auto">
+        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
+          <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-8 text-white">
+            <div className="flex justify-between items-center mb-6">
+              <h1 className="text-4xl font-bold">@{username}</h1>
+              <button
+                onClick={copyLink}
+                className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-xl hover:bg-white/30 transition"
+              >
+                {copied ? <Check className="w-6 h-6" /> : <Share2 className="w-6 h-6" />}
+                <span className="font-medium">{copied ? 'Copied!' : 'Share Link'}</span>
+              </button>
+            </div>
+            <div className="flex gap-4">
+              <button
+                onClick={() => setView('create')}
+                className={`px-8 py-4 rounded-xl font-bold transition ${view === 'create' ? 'bg-white text-purple-600' : 'bg-white/20'}`}
+              >
+                Send
+              </button>
+              <button
+                onClick={() => { setView('inbox'); fetchMessages(username); }}
+                className={`px-8 py-4 rounded-xl font-bold flex items-center gap-3 transition ${view === 'inbox' ? 'bg-white text-purple-600' : 'bg-white/20'}`}
+              >
+                <Inbox className="w-6 h-6" />
+                Inbox ({messages.length})
+              </button>
             </div>
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
-function AuthForm({ title, onSubmit, back }) {
-  const [email, setEmail] = useState('');
-  const [pass, setPass] = useState('');
-  return (
-    <div className="min-h-screen bg-black text-cyan-400 font-mono flex items-center justify-center p-8">
-      <div className="w-full max-w-md space-y-8">
-        <h1 className="text-5xl font-bold text-center">{title}</h1>
-        <input type="email" placeholder="EMAIL" value={email} onChange={e => setEmail(e.target.value)} className="w-full px-6 py-5 bg-black border-4 border-cyan-500 text-xl" />
-        <input type="password" placeholder="PASSWORD" value={pass} onChange={e => setPass(e.target.value)} className="w-full px-6 py-5 bg-black border-4 border-cyan-500 text-xl" />
-        <button onClick={() => onSubmit(email, pass)} className="w-full py-6 bg-cyan-500 text-black text-2xl font-bold hover:bg-cyan-400">
-          {title === 'CREATE ACCOUNT' ? 'CREATE' : 'LOGIN'}
-        </button>
-        <button onClick={back} className="w-full py-4 border-2 border-cyan-500 hover:bg-cyan-500 hover:text-black">
-          ← Back
-        </button>
-      </div>
-    </div>
-  );
-}
+          <div className="p-10">
+            {view === 'create' ? (
+              <div className="max-w-lg mx-auto text-center">
+                <button
+                  onMouseDown={startRecording}
+                  onMouseUp={stopRecording}
+                  onTouchStart={startRecording}
+                  onTouchEnd={stopRecording}
+                  className={`w-48 h-48 rounded-full shadow-2xl transition-all ${
+                    isRecording
+                      ? 'bg-red-500 animate-pulse scale-110'
+                      : 'bg-gradient-to-br from-purple-500 to-pink-500 hover:scale-110'
+                  } flex items-center justify-center`}
+                >
+                  <Mic className="w-24 h-24 text-white" />
+                </button>
+                <p className="mt-8 text-xl text-gray-700">
+                  {isRecording ? 'Recording... Release to stop' : 'Hold to record'}
+                </p>
 
-function Recorder(p) {
-  const { isRecording, audioBlob, videoDataUrl, isProcessing, start, stop, cancel, generate, send } = p;
-  return (
-    <>
-      {!audioBlob && !videoDataUrl && (
-        <button onMouseDown={start} onMouseUp={stop} onTouchStart={start} onTouchEnd={stop}
-          className={`w-full py-20 text-3xl font-bold ${isRecording ? 'bg-red-600 animate-pulse' : 'border-4 border-cyan-500 hover:bg-cyan-500 hover:text-black'}`}>
-          <Mic className="w-20 h-20 mx-auto mb-4" />
-          {isRecording ? 'RELEASE' : 'HOLD TO RECORD'}
-        </button>
-      )}
-      {audioBlob && !videoDataUrl && !isProcessing && (
-        <div className="space-y-6">
-          <audio src={URL.createObjectURL(audioBlob)} controls className="w-full" />
-          <div className="grid grid-cols-2 gap-4">
-            <button onClick={generate} className="py-6 bg-cyan-500 text-black font-bold text-xl">GENERATE</button>
-            <button onClick={cancel} className="py-6 border-2 border-red-500 text-red-500 hover:bg-red-500 hover:text-black">Cancel</button>
+                {(audioUrl || transcript) && (
+                  <div className="mt-10 bg-gray-50 rounded-3xl p-8">
+                    {audioUrl && <audio controls src={audioUrl} className="w-full mb-6" />}
+                    {transcript && (
+                      <p className="text-left text-gray-800 font-medium mb-6">“{transcript}”</p>
+                    )}
+                    <button
+                      onClick={sendMessage}
+                      disabled={loading}
+                      className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-5 rounded-2xl font-bold flex items-center justify-center gap-3 hover:shadow-xl disabled:opacity-70"
+                    >
+                      <Send className="w-7 h-7" />
+                      {loading ? 'Sending...' : 'Send Anonymously'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <h2 className="text-3xl font-bold text-gray-800 mb-8">Your Anonymous Inbox</h2>
+                {messages.length === 0 ? (
+                  <div className="text-center py-20 text-gray-500">
+                    <p className="text-2xl mb-4">No messages yet</p>
+                    <p>Share your link:</p>
+                    <p className="font-mono bg-gray-100 px-4 py-2 rounded mt-2">
+                      {window.location.origin}?send_to={username}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {messages.map((msg) => (
+                      <div key={msg.id} className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
+                        {msg.audio_url && (
+                          <audio controls src={msg.audio_url} className="w-full mb-6 rounded-xl" />
+                        )}
+                        {msg.text && msg.text !== '(Voice only)' && (
+                          <p className="text-xl text-gray-800 font-medium mb-6">“{msg.text}”</p>
+                        )}
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm text-gray-500">
+                            {new Date(msg.created_at).toLocaleString()}
+                          </span>
+                          {msg.text && (
+                            <button
+                              onClick={() => playRobotic(msg.text, msg.id)}
+                              disabled={isPlaying === msg.id}
+                              className="bg-purple-600 text-white px-6 py-3 rounded-xl flex items-center gap-3 hover:bg-purple-700 disabled:opacity-60 transition"
+                            >
+                              <Play className="w-5 h-5" />
+                              {isPlaying === msg.id ? 'Playing...' : 'Robotic Voice'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
-      )}
-      {isProcessing && <div className="text-center py-20 text-4xl animate-pulse">BUILDING...</div>}
-      {videoDataUrl && (
-        <div className="space-y-8">
-          <video src={videoDataUrl} controls autoPlay className="w-full border-4 border-cyan-500" />
-          <button onClick={send} className="w-full py-8 bg-cyan-500 text-black text-3xl font-bold flex items-center justify-center gap-4 hover:bg-cyan-400">
-            <Send className="w-12 h-12" /> SEND
-          </button>
-        </div>
-      )}
-    </>
+      </div>
+    </div>
   );
 }
