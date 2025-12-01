@@ -3,8 +3,8 @@ import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles } from 'l
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'sb_publishable_0TGwu6pOtsZCEzA00vMveA_OVhfKJ_I';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -476,13 +476,14 @@ export default function AnonymousVoiceApp() {
 
               {(audioUrl || transcript) && (
                 <div className="mt-10 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg">
-                  {transcript && (
-                    <div className="bg-white rounded-xl p-6 mb-6">
-                      <p className="text-sm text-gray-500 mb-2 font-bold">Transcription:</p>
-                      <p className="text-left text-gray-800 font-medium">"{transcript}"</p>
-                      <p className="text-xs text-purple-600 mt-2">🤖 Will be sent as robotic voice</p>
+                  <div className="bg-white rounded-xl p-6 mb-6 flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full mx-auto mb-4 flex items-center justify-center animate-pulse">
+                        <Mic className="w-10 h-10 text-white" />
+                      </div>
+                      <p className="text-gray-600 font-medium">🤖 Voice recorded - Ready to send</p>
                     </div>
-                  )}
+                  </div>
                   <button
                     onClick={sendMessageWithRoboticVoice}
                     disabled={loading}
@@ -569,11 +570,14 @@ export default function AnonymousVoiceApp() {
               <div className="space-y-6">
                 {messages.map((msg) => (
                   <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-8 shadow-lg hover:shadow-xl transition-shadow">
-                    {msg.text && (
-                      <div className="bg-white rounded-xl p-6 mb-6 shadow-md">
-                        <p className="text-xl text-gray-800 font-medium">"{msg.text}"</p>
+                    <div className="bg-white rounded-xl p-6 mb-6 shadow-md flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-3 flex items-center justify-center">
+                          <Mic className="w-8 h-8 text-white" />
+                        </div>
+                        <p className="text-gray-500 text-sm">🤖 Anonymous Voice Message</p>
                       </div>
-                    )}
+                    </div>
                     <div className="flex justify-between items-center">
                       <span className="text-sm text-gray-500 font-medium">
                         📅 {new Date(msg.created_at).toLocaleString()}
@@ -585,7 +589,7 @@ export default function AnonymousVoiceApp() {
                           className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl flex items-center gap-3 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg"
                         >
                           <Play className="w-5 h-5" />
-                          {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Play Robotic Voice'}
+                          {isPlaying === msg.id ? '🤖 Playing...' : '🤖 Play Voice'}
                         </button>
                       )}
                     </div>
