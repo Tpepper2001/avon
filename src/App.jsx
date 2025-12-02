@@ -336,8 +336,7 @@ export default function AnonymousVoiceApp() {
   // RENDER
   if (!currentUser && authView === 'landing' && !recipientUsername) {
     return (/* ... same landing page ... */);
-  }
-
+  
   if (recipientUsername && !currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
