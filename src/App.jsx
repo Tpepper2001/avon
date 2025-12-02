@@ -153,11 +153,9 @@ export default function AnonymousVoiceApp() {
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       setRecordingTime(0);
-      // Start timer
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
-      // Live transcription
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
@@ -180,52 +178,34 @@ export default function AnonymousVoiceApp() {
   const transcribeAudioWithAssemblyAI = async (audioBlob) => {
     try {
       const ASSEMBLY_AI_API_KEY = 'e923129f7dec495081e757c6fe82ea8b';
-     
-      // Step 1: Upload audio to AssemblyAI
       const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
         method: 'POST',
-        headers: {
-          'authorization': ASSEMBLY_AI_API_KEY,
-        },
+        headers: { 'authorization': ASSEMBLY_AI_API_KEY },
         body: audioBlob,
       });
-     
       const uploadData = await uploadResponse.json();
       const audioUrl = uploadData.upload_url;
-     
-      // Step 2: Request transcription
       const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
         method: 'POST',
         headers: {
           'authorization': ASSEMBLY_AI_API_KEY,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({
-          audio_url: audioUrl,
-        }),
+        body: JSON.stringify({ audio_url: audioUrl }),
       });
-     
       const transcriptData = await transcriptResponse.json();
       const transcriptId = transcriptData.id;
-     
-      // Step 3: Poll for transcription result
       const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptId}`;
-     
       while (true) {
         const pollingResponse = await fetch(pollingEndpoint, {
-          headers: {
-            'authorization': ASSEMBLY_AI_API_KEY,
-          },
+          headers: { 'authorization': e923129f7dec495081e757c6fe82ea8b },
         });
-       
         const result = await pollingResponse.json();
-       
         if (result.status === 'completed') {
           return result.text;
         } else if (result.status === 'error') {
           throw new Error('Transcription failed: ' + result.error);
         } else {
-          // Wait 3 seconds before polling again
           await new Promise(resolve => setTimeout(resolve, 3000));
         }
       }
@@ -239,30 +219,19 @@ export default function AnonymousVoiceApp() {
     if (mediaRecorderRef.current?.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-     
-      // Stop browser speech recognition
       if (recognitionRef.current) recognitionRef.current.stop();
-     
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-     
-      // Wait for audio blob to be created, then transcribe with AssemblyAI
       setTimeout(async () => {
         if (audioChunksRef.current.length > 0) {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-         
-          // Show loading indicator
           setLoading(true);
-         
-          // Try AssemblyAI transcription
           const transcribedText = await transcribeAudioWithAssemblyAI(blob);
-         
           if (transcribedText) {
             setTranscript(transcribedText);
           }
-         
           setLoading(false);
         }
       }, 100);
@@ -279,7 +248,7 @@ export default function AnonymousVoiceApp() {
     setRecordingTime(0);
   };
 
-  // FIXED VERSION — uploads audio and saves real audio_url
+  // FULLY FIXED: uploads original audio + works on iOS
   const sendMessageWithRoboticVoice = async () => {
     if (!transcript && !audioBlob) {
       alert('Please record a voice message first');
@@ -294,7 +263,6 @@ export default function AnonymousVoiceApp() {
     setLoading(true);
     let savedAudioUrl = null;
 
-    // Upload audio if we have a blob
     if (audioBlob) {
       const fileName = `voice-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.webm`;
       const { error: uploadError } = await supabase.storage
@@ -334,7 +302,6 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
-    // Preview robotic voice for sender
     if (transcript) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(transcript);
@@ -405,14 +372,25 @@ export default function AnonymousVoiceApp() {
       source.connect(audioCtx.destination);
      
       const videoStream = canvas.captureStream(30);
+
+      // CROSS-PLATFORM VIDEO FORMAT FIX (MP4 first → works on iPhone)
+      let mimeType = 'video/mp4;codecs=avc1';
+      let fileExt = 'mp4';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm;codecs=vp9,opus';
+        fileExt = 'webm';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'video/webm;codecs=vp8,opus';
+          fileExt = 'webm';
+        }
+      }
+
       const combinedStream = new MediaStream([
         ...videoStream.getVideoTracks(),
         ...dest.stream.getAudioTracks()
       ]);
      
-      const mediaRecorder = new MediaRecorder(combinedStream, {
-        mimeType: 'video/webm;codecs=vp8,opus'
-      });
+      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
       const chunks = [];
      
       mediaRecorder.ondataavailable = (e) => {
@@ -423,19 +401,19 @@ export default function AnonymousVoiceApp() {
      
       mediaRecorder.onstop = async () => {
         try {
-          const blob = new Blob(chunks, { type: 'video/webm' });
+          const blob = new Blob(chunks, { type: mimeType });
          
-          const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+          const fileName = `avatar-${messageId}-${Date.now()}.${fileExt}`;
+          const contentType = mimeType.split(';')[0];
+
           const { error: uploadError } = await supabase.storage
             .from('voices')
-            .upload(fileName, blob, { contentType: 'video/webm', upsert: false });
+            .upload(fileName, blob, { 
+              contentType,
+              upsert: false 
+            });
          
-          if (uploadError) {
-            console.error('Upload error:', uploadError);
-            alert('Failed to upload video: ' + uploadError.message);
-            setGeneratingVideo(null);
-            return;
-          }
+          if (uploadError) throw uploadError;
          
           const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
          
@@ -444,9 +422,7 @@ export default function AnonymousVoiceApp() {
             .update({ video_url: publicUrl })
             .eq('id', messageId);
          
-          if (updateError) {
-            console.error('Update error:', updateError);
-          }
+          if (updateError) console.error('Update error:', updateError);
          
           if (currentUser) {
             await fetchMessages(currentUser.username);
@@ -597,7 +573,7 @@ export default function AnonymousVoiceApp() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // ════════════════════════════════════════ LANDING PAGE ════════════════════════════════════════
+  // LANDING PAGE
   if (!currentUser && authView === 'landing' && !recipientUsername) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -631,7 +607,7 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // ════════════════════════════════════════ SIGNUP PAGE ════════════════════════════════════════
+  // SIGNUP PAGE
   if (!currentUser && authView === 'signup') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -689,7 +665,7 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // ════════════════════════════════════════ LOGIN PAGE ════════════════════════════════════════
+  // LOGIN PAGE
   if (!currentUser && authView === 'login') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -747,7 +723,7 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // ════════════════════════════════════════ ANONYMOUS SEND PAGE ════════════════════════════════════════
+  // ANONYMOUS SEND PAGE
   if (recipientUsername && !currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
@@ -856,12 +832,11 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // ════════════════════════════════════════ LOGGED IN MAIN APP ════════════════════════════════════════
+  // LOGGED IN MAIN APP
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
       <div className="max-w-4xl mx-auto">
         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
-          {/* Header */}
           <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 sm:p-8 text-white">
             <div className="flex justify-between items-center mb-4 sm:mb-6">
               <div className="flex items-center gap-2 sm:gap-3">
@@ -885,7 +860,6 @@ export default function AnonymousVoiceApp() {
               </div>
             </div>
           </div>
-          {/* Main Content - INBOX */}
           <div className="p-4 sm:p-10">
             <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8">Your Anonymous Voice Inbox</h2>
             {messages.length === 0 ? (
