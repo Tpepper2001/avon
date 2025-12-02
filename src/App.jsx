@@ -24,7 +24,6 @@ export default function AnonymousVoiceApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [recordingTime, setRecordingTime] = useState(0);
-  const [generatingVideo, setGeneratingVideo] = useState(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
@@ -198,7 +197,7 @@ export default function AnonymousVoiceApp() {
       const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptId}`;
       while (true) {
         const pollingResponse = await fetch(pollingEndpoint, {
-          headers: { 'authorization': e923129f7dec495081e757c6fe82ea8b },
+          headers: { 'authorization': ASSEMBLY_AI_API_KEY },
         });
         const result = await pollingResponse.json();
         if (result.status === 'completed') {
@@ -248,7 +247,201 @@ export default function AnonymousVoiceApp() {
     setRecordingTime(0);
   };
 
-  // FULLY FIXED: uploads original audio + works on iOS
+  const generateAvatarVideoForMessage = async (messageId, audioUrl) => {
+    try {
+      const audioResponse = await fetch(audioUrl);
+      const audioBlob = await audioResponse.blob();
+     
+      const audioElement = document.createElement('audio');
+      const audioObjectUrl = URL.createObjectURL(audioBlob);
+      audioElement.src = audioObjectUrl;
+     
+      await new Promise((resolve, reject) => {
+        audioElement.onloadedmetadata = resolve;
+        audioElement.onerror = reject;
+      });
+     
+      const audioDuration = audioElement.duration;
+      const totalFrames = Math.ceil(audioDuration * 30);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 400;
+      const ctx = canvas.getContext('2d');
+     
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaElementSource(audioElement);
+      const dest = audioCtx.createMediaStreamDestination();
+      source.connect(dest);
+      source.connect(audioCtx.destination);
+     
+      const videoStream = canvas.captureStream(30);
+
+      let mimeType = 'video/webm;codecs=vp8,opus';
+      let fileExt = 'webm';
+      
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm';
+        fileExt = 'webm';
+      }
+      
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/mp4';
+        fileExt = 'mp4';
+      }
+
+      const combinedStream = new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+      ]);
+     
+      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
+      const chunks = [];
+     
+      return new Promise((resolve, reject) => {
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            chunks.push(e.data);
+          }
+        };
+       
+        mediaRecorder.onstop = async () => {
+          try {
+            const blob = new Blob(chunks, { type: mimeType });
+           
+            const fileName = `avatar-${messageId}-${Date.now()}.${fileExt}`;
+            const contentType = mimeType.split(';')[0];
+
+            const { error: uploadError } = await supabase.storage
+              .from('voices')
+              .upload(fileName, blob, { 
+                contentType,
+                upsert: false 
+              });
+           
+            if (uploadError) throw uploadError;
+           
+            const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
+           
+            const { error: updateError } = await supabase
+              .from('messages')
+              .update({ video_url: publicUrl })
+              .eq('id', messageId);
+           
+            if (updateError) throw updateError;
+           
+            URL.revokeObjectURL(audioObjectUrl);
+            resolve();
+          } catch (err) {
+            console.error('Error in onstop:', err);
+            reject(err);
+          }
+        };
+       
+        mediaRecorder.onerror = (e) => {
+          console.error('MediaRecorder error:', e);
+          reject(e);
+        };
+       
+        const analyser = audioCtx.createAnalyser();
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+       
+        mediaRecorder.start(100);
+        audioElement.play();
+       
+        let frame = 0;
+        let animationId = null;
+       
+        const animate = () => {
+          analyser.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+          const isSpeaking = average > 10;
+          const intensity = Math.min(average / 50, 1);
+         
+          const gradient = ctx.createLinearGradient(0, 0, 400, 400);
+          gradient.addColorStop(0, '#667eea');
+          gradient.addColorStop(1, '#764ba2');
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, 400, 400);
+         
+          const time = frame / 30;
+         
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+          ctx.shadowBlur = 20;
+          ctx.shadowOffsetX = 5;
+          ctx.shadowOffsetY = 5;
+         
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(100, 100, 200, 200);
+         
+          ctx.shadowColor = 'transparent';
+         
+          const shouldBlink = Math.floor(time * 2) % 10 === 0 && (time % 0.5) < 0.1;
+          const eyeHeight = shouldBlink ? 5 : 20 + intensity * 5;
+         
+          ctx.fillStyle = '#667eea';
+          ctx.fillRect(130, 150, 30, eyeHeight);
+          ctx.fillRect(240, 150, 30, eyeHeight);
+         
+          if (isSpeaking) {
+            const mouthWidth = 100 + intensity * 30;
+            const mouthHeight = 5 + intensity * 30;
+            ctx.fillStyle = '#667eea';
+            ctx.fillRect(200 - mouthWidth/2, 230, mouthWidth, mouthHeight);
+          } else {
+            ctx.fillStyle = '#667eea';
+            ctx.fillRect(160, 240, 80, 8);
+          }
+         
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(195, 80, 10, 30);
+         
+          const glowSize = 15 + intensity * 8;
+          const glowGradient = ctx.createRadialGradient(200, 70, 0, 200, 70, glowSize);
+          glowGradient.addColorStop(0, '#ffffff');
+          glowGradient.addColorStop(0.5, '#a78bfa');
+          glowGradient.addColorStop(1, '#667eea');
+          ctx.fillStyle = glowGradient;
+          ctx.beginPath();
+          ctx.arc(200, 70, glowSize, 0, Math.PI * 2);
+          ctx.fill();
+         
+          frame++;
+         
+          if (frame < totalFrames && !audioElement.ended) {
+            animationId = requestAnimationFrame(animate);
+          } else {
+            setTimeout(() => {
+              if (mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+              }
+              audioCtx.close();
+            }, 500);
+          }
+        };
+       
+        animate();
+       
+        audioElement.onended = () => {
+          setTimeout(() => {
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            if (animationId) {
+              cancelAnimationFrame(animationId);
+            }
+            audioCtx.close();
+          }, 500);
+        };
+      });
+    } catch (error) {
+      console.error('Video generation error:', error);
+      throw error;
+    }
+  };
+
   const sendMessageWithRoboticVoice = async () => {
     if (!transcript && !audioBlob) {
       alert('Please record a voice message first');
@@ -288,13 +481,15 @@ export default function AnonymousVoiceApp() {
 
     const messageText = transcript || '[Voice message - transcription unavailable]';
 
-    const { error: insertError } = await supabase
+    const { data: insertedMessage, error: insertError } = await supabase
       .from('messages')
       .insert({
         username: recipient,
         text: messageText,
         audio_url: savedAudioUrl,
-      });
+      })
+      .select()
+      .single();
 
     if (insertError) {
       alert('Send failed: ' + insertError.message);
@@ -302,247 +497,24 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
-    if (transcript) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(transcript);
-      utterance.rate = 0.7;
-      utterance.pitch = 0.3;
-      utterance.volume = 0.9;
-      utterance.onend = () => {
-        alert(`Anonymous robotic voice sent to @${recipient}!`);
-        setAudioBlob(null);
-        setAudioUrl(null);
-        setTranscript('');
-        setRecordingTime(0);
-        if (currentUser && recipient === currentUser.username) {
-          fetchMessages(currentUser.username);
-        }
-        setLoading(false);
-      };
-      window.speechSynthesis.speak(utterance);
-    } else {
-      alert(`Anonymous voice sent to @${recipient}!`);
-      setAudioBlob(null);
-      setAudioUrl(null);
-      setTranscript('');
-      setRecordingTime(0);
-      if (currentUser && recipient === currentUser.username) {
-        fetchMessages(currentUser.username);
+    // Auto-generate video if we have transcript and audio
+    if (transcript && savedAudioUrl && insertedMessage) {
+      try {
+        await generateAvatarVideoForMessage(insertedMessage.id, savedAudioUrl);
+      } catch (error) {
+        console.error('Video generation failed:', error);
       }
-      setLoading(false);
     }
-  };
 
-  const generateAvatarVideo = async (text, messageId) => {
-    setGeneratingVideo(messageId);
-   
-    try {
-      const message = messages.find(m => m.id === messageId);
-     
-      if (!message || !message.audio_url) {
-        alert('Original audio not found. Cannot generate video.');
-        setGeneratingVideo(null);
-        return;
-      }
-
-      const audioResponse = await fetch(message.audio_url);
-      const audioBlob = await audioResponse.blob();
-     
-      const audioElement = document.createElement('audio');
-      const audioUrl = URL.createObjectURL(audioBlob);
-      audioElement.src = audioUrl;
-     
-      await new Promise((resolve, reject) => {
-        audioElement.onloadedmetadata = resolve;
-        audioElement.onerror = reject;
-      });
-     
-      const audioDuration = audioElement.duration;
-      const totalFrames = Math.ceil(audioDuration * 30);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = 400;
-      canvas.height = 400;
-      const ctx = canvas.getContext('2d');
-     
-      const audioCtx = new AudioContext();
-      const source = audioCtx.createMediaElementSource(audioElement);
-      const dest = audioCtx.createMediaStreamDestination();
-      source.connect(dest);
-      source.connect(audioCtx.destination);
-     
-      const videoStream = canvas.captureStream(30);
-
-      // CROSS-PLATFORM VIDEO FORMAT FIX
-      let mimeType = 'video/webm;codecs=vp8,opus';
-      let fileExt = 'webm';
-      
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm';
-        fileExt = 'webm';
-      }
-      
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/mp4';
-        fileExt = 'mp4';
-      }
-
-      const combinedStream = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks()
-      ]);
-     
-      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
-      const chunks = [];
-     
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunks.push(e.data);
-        }
-      };
-     
-      mediaRecorder.onstop = async () => {
-        try {
-          const blob = new Blob(chunks, { type: mimeType });
-         
-          const fileName = `avatar-${messageId}-${Date.now()}.${fileExt}`;
-          const contentType = mimeType.split(';')[0];
-
-          const { error: uploadError } = await supabase.storage
-            .from('voices')
-            .upload(fileName, blob, { 
-              contentType,
-              upsert: false 
-            });
-         
-          if (uploadError) throw uploadError;
-         
-          const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-         
-          const { error: updateError } = await supabase
-            .from('messages')
-            .update({ video_url: publicUrl })
-            .eq('id', messageId);
-         
-          if (updateError) console.error('Update error:', updateError);
-         
-          if (currentUser) {
-            await fetchMessages(currentUser.username);
-          }
-         
-          URL.revokeObjectURL(audioUrl);
-          setGeneratingVideo(null);
-        } catch (err) {
-          console.error('Error in onstop:', err);
-          setGeneratingVideo(null);
-          alert('Failed to process video: ' + err.message);
-        }
-      };
-     
-      mediaRecorder.onerror = (e) => {
-        console.error('MediaRecorder error:', e);
-        setGeneratingVideo(null);
-        alert('Recording error occurred');
-      };
-     
-      const analyser = audioCtx.createAnalyser();
-      source.connect(analyser);
-      analyser.fftSize = 256;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-     
-      mediaRecorder.start(100);
-      audioElement.play();
-     
-      let frame = 0;
-      let animationId = null;
-     
-      const animate = () => {
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-        const isSpeaking = average > 10;
-        const intensity = Math.min(average / 50, 1);
-       
-        const gradient = ctx.createLinearGradient(0, 0, 400, 400);
-        gradient.addColorStop(0, '#667eea');
-        gradient.addColorStop(1, '#764ba2');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 400, 400);
-       
-        const time = frame / 30;
-       
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-        ctx.shadowBlur = 20;
-        ctx.shadowOffsetX = 5;
-        ctx.shadowOffsetY = 5;
-       
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(100, 100, 200, 200);
-       
-        ctx.shadowColor = 'transparent';
-       
-        const shouldBlink = Math.floor(time * 2) % 10 === 0 && (time % 0.5) < 0.1;
-        const eyeHeight = shouldBlink ? 5 : 20 + intensity * 5;
-       
-        ctx.fillStyle = '#667eea';
-        ctx.fillRect(130, 150, 30, eyeHeight);
-        ctx.fillRect(240, 150, 30, eyeHeight);
-       
-        if (isSpeaking) {
-          const mouthWidth = 100 + intensity * 30;
-          const mouthHeight = 5 + intensity * 30;
-          ctx.fillStyle = '#667eea';
-          ctx.fillRect(200 - mouthWidth/2, 230, mouthWidth, mouthHeight);
-        } else {
-          ctx.fillStyle = '#667eea';
-          ctx.fillRect(160, 240, 80, 8);
-        }
-       
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(195, 80, 10, 30);
-       
-        const glowSize = 15 + intensity * 8;
-        const glowGradient = ctx.createRadialGradient(200, 70, 0, 200, 70, glowSize);
-        glowGradient.addColorStop(0, '#ffffff');
-        glowGradient.addColorStop(0.5, '#a78bfa');
-        glowGradient.addColorStop(1, '#667eea');
-        ctx.fillStyle = glowGradient;
-        ctx.beginPath();
-        ctx.arc(200, 70, glowSize, 0, Math.PI * 2);
-        ctx.fill();
-       
-        frame++;
-       
-        if (frame < totalFrames && !audioElement.ended) {
-          animationId = requestAnimationFrame(animate);
-        } else {
-          setTimeout(() => {
-            if (mediaRecorder.state === 'recording') {
-              mediaRecorder.stop();
-            }
-            audioCtx.close();
-          }, 500);
-        }
-      };
-     
-      animate();
-     
-      audioElement.onended = () => {
-        setTimeout(() => {
-          if (mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-          }
-          if (animationId) {
-            cancelAnimationFrame(animationId);
-          }
-          audioCtx.close();
-        }, 500);
-      };
-     
-    } catch (error) {
-      console.error('Video generation error:', error);
-      setGeneratingVideo(null);
-      alert('Failed to generate video: ' + error.message);
+    alert(`Anonymous robotic voice sent to @${recipient}!`);
+    setAudioBlob(null);
+    setAudioUrl(null);
+    setTranscript('');
+    setRecordingTime(0);
+    if (currentUser && recipient === currentUser.username) {
+      fetchMessages(currentUser.username);
     }
+    setLoading(false);
   };
 
   const playRobotic = (text, id) => {
@@ -904,38 +876,16 @@ export default function AnonymousVoiceApp() {
                         {new Date(msg.created_at).toLocaleString()}
                       </span>
                      
-                      <div className="flex gap-2 w-full sm:w-auto">
-                        {msg.text && !msg.video_url && (
-                          <button
-                            onClick={() => generateAvatarVideo(msg.text, msg.id)}
-                            disabled={generatingVideo === msg.id}
-                            className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
-                          >
-                            {generatingVideo === msg.id ? (
-                              <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                <span>Creating...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="w-4 h-4" />
-                                <span>Generate Video</span>
-                              </>
-                            )}
-                          </button>
-                        )}
-                       
-                        {msg.text && (
-                          <button
-                            onClick={() => playRobotic(msg.text, msg.id)}
-                            disabled={isPlaying === msg.id}
-                            className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
-                          >
-                            <Play className="w-4 h-4" />
-                            <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play'}</span>
-                          </button>
-                        )}
-                      </div>
+                      {msg.text && (
+                        <button
+                          onClick={() => playRobotic(msg.text, msg.id)}
+                          disabled={isPlaying === msg.id}
+                          className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+                        >
+                          <Play className="w-4 h-4" />
+                          <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play Audio'}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
