@@ -371,120 +371,228 @@ export default function AnonymousVoiceApp() {
     setGeneratingVideo(messageId);
     
     try {
-      // Create a canvas to generate animated avatar
+      // Find the message to get the audio URL
+      const message = messages.find(m => m.id === messageId);
+      
+      if (!message || !message.audio_url) {
+        alert('Original audio not found. Cannot generate video.');
+        setGeneratingVideo(null);
+        return;
+      }
+
+      // Fetch the audio file
+      const audioResponse = await fetch(message.audio_url);
+      const audioBlob = await audioResponse.blob();
+      
+      // Create audio element to get duration
+      const audioElement = document.createElement('audio');
+      const audioUrl = URL.createObjectURL(audioBlob);
+      audioElement.src = audioUrl;
+      
+      await new Promise((resolve, reject) => {
+        audioElement.onloadedmetadata = resolve;
+        audioElement.onerror = reject;
+      });
+      
+      const audioDuration = audioElement.duration;
+      const totalFrames = Math.ceil(audioDuration * 30); // 30 FPS
+      
+      // Create canvas for animation
       const canvas = document.createElement('canvas');
       canvas.width = 400;
       canvas.height = 400;
       const ctx = canvas.getContext('2d');
       
-      // Prepare for recording
-      const stream = canvas.captureStream(30); // 30 FPS
+      // Create audio context to capture audio
       const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaElementSource(audioElement);
       const dest = audioCtx.createMediaStreamDestination();
+      source.connect(dest);
+      source.connect(audioCtx.destination); // Also play through speakers
       
-      // Create robotic voice
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.7;
-      utterance.pitch = 0.3;
-      utterance.volume = 0.9;
+      // Combine video and audio streams
+      const videoStream = canvas.captureStream(30);
+      const combinedStream = new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+      ]);
       
-      // Start recording video + audio
-      const mediaRecorder = new MediaRecorder(stream);
+      const mediaRecorder = new MediaRecorder(combinedStream, { 
+        mimeType: 'video/webm;codecs=vp8,opus' 
+      });
       const chunks = [];
       
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
       
       mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        
-        // Upload video to Supabase storage
-        const fileName = `avatar-${messageId}-${Date.now()}.webm`;
-        const { error: uploadError } = await supabase.storage
-          .from('voices')
-          .upload(fileName, blob, { contentType: 'video/webm', upsert: false });
-        
-        if (!uploadError) {
+        try {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          
+          // Upload video to Supabase storage
+          const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+          const { error: uploadError } = await supabase.storage
+            .from('voices')
+            .upload(fileName, blob, { contentType: 'video/webm', upsert: false });
+          
+          if (uploadError) {
+            console.error('Upload error:', uploadError);
+            alert('Failed to upload video: ' + uploadError.message);
+            setGeneratingVideo(null);
+            return;
+          }
+          
           const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
           
           // Update message with video URL
-          await supabase
+          const { error: updateError } = await supabase
             .from('messages')
             .update({ video_url: publicUrl })
             .eq('id', messageId);
           
+          if (updateError) {
+            console.error('Update error:', updateError);
+          }
+          
           // Refresh messages
           if (currentUser) {
-            fetchMessages(currentUser.username);
+            await fetchMessages(currentUser.username);
           }
+          
+          // Clean up
+          URL.revokeObjectURL(audioUrl);
+          setGeneratingVideo(null);
+        } catch (err) {
+          console.error('Error in onstop:', err);
+          setGeneratingVideo(null);
+          alert('Failed to process video: ' + err.message);
         }
-        
-        setGeneratingVideo(null);
       };
       
-      mediaRecorder.start();
+      mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        setGeneratingVideo(null);
+        alert('Recording error occurred');
+      };
       
-      // Animate avatar while speaking
+      // Create analyzer for audio visualization
+      const analyser = audioCtx.createAnalyser();
+      source.connect(analyser);
+      analyser.fftSize = 256;
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      // Start recording
+      mediaRecorder.start(100);
+      
+      // Start playing audio
+      audioElement.play();
+      
+      // Animate avatar synced with audio
       let frame = 0;
+      let animationId = null;
+      
       const animate = () => {
-        // Clear canvas
-        ctx.fillStyle = '#667eea';
+        // Get audio frequency data for mouth animation
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        const isSpeaking = average > 10; // Threshold for detecting speech
+        const intensity = Math.min(average / 50, 1); // 0 to 1
+        
+        // Clear canvas with gradient background
+        const gradient = ctx.createLinearGradient(0, 0, 400, 400);
+        gradient.addColorStop(0, '#667eea');
+        gradient.addColorStop(1, '#764ba2');
+        ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, 400, 400);
         
-        // Draw robot face
         const time = frame / 30;
         
-        // Head
+        // Draw robot head with shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = 20;
+        ctx.shadowOffsetX = 5;
+        ctx.shadowOffsetY = 5;
+        
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(100, 100, 200, 200);
         
-        // Eyes (animate based on speech)
-        const eyeSize = 20 + Math.sin(time * 10) * 5;
-        ctx.fillStyle = '#667eea';
-        ctx.fillRect(140, 150, eyeSize, eyeSize);
-        ctx.fillRect(240, 150, eyeSize, eyeSize);
+        ctx.shadowColor = 'transparent';
         
-        // Mouth (animate like speaking)
-        const mouthHeight = 10 + Math.abs(Math.sin(time * 15)) * 20;
-        ctx.fillStyle = '#667eea';
-        ctx.fillRect(150, 220, 100, mouthHeight);
+        // Eyes (blink occasionally and respond to audio)
+        const shouldBlink = Math.floor(time * 2) % 10 === 0 && (time % 0.5) < 0.1;
+        const eyeHeight = shouldBlink ? 5 : 20 + intensity * 5;
         
-        // Antenna
+        ctx.fillStyle = '#667eea';
+        ctx.fillRect(130, 150, 30, eyeHeight);
+        ctx.fillRect(240, 150, 30, eyeHeight);
+        
+        // Mouth (animate based on actual audio levels)
+        if (isSpeaking) {
+          const mouthWidth = 100 + intensity * 30;
+          const mouthHeight = 5 + intensity * 30;
+          ctx.fillStyle = '#667eea';
+          ctx.fillRect(200 - mouthWidth/2, 230, mouthWidth, mouthHeight);
+        } else {
+          // Neutral mouth
+          ctx.fillStyle = '#667eea';
+          ctx.fillRect(160, 240, 80, 8);
+        }
+        
+        // Antenna with glowing ball
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(195, 80, 10, 30);
+        
+        // Glowing antenna ball (pulses with audio)
+        const glowSize = 15 + intensity * 8;
+        const glowGradient = ctx.createRadialGradient(200, 70, 0, 200, 70, glowSize);
+        glowGradient.addColorStop(0, '#ffffff');
+        glowGradient.addColorStop(0.5, '#a78bfa');
+        glowGradient.addColorStop(1, '#667eea');
+        ctx.fillStyle = glowGradient;
         ctx.beginPath();
-        ctx.arc(200, 70, 15, 0, Math.PI * 2);
+        ctx.arc(200, 70, glowSize, 0, Math.PI * 2);
         ctx.fill();
         
         frame++;
         
-        if (frame < 180) { // 6 seconds max
-          requestAnimationFrame(animate);
+        if (frame < totalFrames && !audioElement.ended) {
+          animationId = requestAnimationFrame(animate);
         } else {
-          mediaRecorder.stop();
+          // Stop recording after animation completes
+          setTimeout(() => {
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            audioCtx.close();
+          }, 500);
         }
       };
       
+      // Start animation
       animate();
       
-      // Play robotic voice
-      window.speechSynthesis.cancel();
-      utterance.onend = () => {
+      // Handle audio end
+      audioElement.onended = () => {
         setTimeout(() => {
           if (mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
           }
+          if (animationId) {
+            cancelAnimationFrame(animationId);
+          }
+          audioCtx.close();
         }, 500);
       };
-      window.speechSynthesis.speak(utterance);
       
     } catch (error) {
       console.error('Video generation error:', error);
       setGeneratingVideo(null);
-      alert('Failed to generate video. Please try again.');
+      alert('Failed to generate video: ' + error.message);
     }
   };
-
   const playRobotic = (text, id) => {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
