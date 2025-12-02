@@ -373,16 +373,18 @@ export default function AnonymousVoiceApp() {
      
       const videoStream = canvas.captureStream(30);
 
-      // CROSS-PLATFORM VIDEO FORMAT FIX (MP4 first → works on iPhone)
-      let mimeType = 'video/mp4;codecs=avc1';
-      let fileExt = 'mp4';
+      // CROSS-PLATFORM VIDEO FORMAT FIX
+      let mimeType = 'video/webm;codecs=vp8,opus';
+      let fileExt = 'webm';
+      
       if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm;codecs=vp9,opus';
+        mimeType = 'video/webm';
         fileExt = 'webm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'video/webm;codecs=vp8,opus';
-          fileExt = 'webm';
-        }
+      }
+      
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/mp4';
+        fileExt = 'mp4';
       }
 
       const combinedStream = new MediaStream([
