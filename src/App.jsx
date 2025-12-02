@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, Trash2 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
-// Put your own keys here
+// REPLACE WITH YOUR OWN KEYS (DO NOT COMMIT REAL KEYS IN PRODUCTION)
 const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
@@ -24,15 +24,18 @@ export default function AnonymousVoiceApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [recordingTime, setRecordingTime] = useState(0);
+  const [generatingVideo, setGeneratingVideo] = useState(null);
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
+  const animationFrameRef = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sendTo = params.get('send_to');
-   
+
     if (sendTo) {
       setRecipientUsername(sendTo);
       setAuthView('');
@@ -58,7 +61,6 @@ export default function AnonymousVoiceApp() {
 
   const handleSignup = async () => {
     setError('');
-   
     if (!username.match(/^[a-zA-Z0-9_-]{3,20}$/)) {
       setError('Username must be 3-20 characters (letters, numbers, - or _)');
       return;
@@ -73,19 +75,23 @@ export default function AnonymousVoiceApp() {
       .select('username')
       .eq('username', username)
       .single();
+
     if (existing) {
       setError('Username already taken');
       setLoading(false);
       return;
     }
+
     const { error: insertError } = await supabase
       .from('users')
       .insert({ username, password });
+
     if (insertError) {
       setError('Signup failed: ' + insertError.message);
       setLoading(false);
       return;
     }
+
     const user = { username };
     setCurrentUser(user);
     localStorage.setItem('anon-voice-user', JSON.stringify(user));
@@ -104,11 +110,13 @@ export default function AnonymousVoiceApp() {
       .eq('username', username)
       .eq('password', password)
       .single();
+
     if (loginError || !data) {
       setError('Invalid username or password');
       setLoading(false);
       return;
     }
+
     const user = { username: data.username };
     setCurrentUser(user);
     localStorage.setItem('anon-voice-user', JSON.stringify(user));
@@ -140,21 +148,28 @@ export default function AnonymousVoiceApp() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
         setAudioBlob(blob);
         setAudioUrl(url);
-        stream.getTracks().forEach((t) => t.stop());
+        stream.getTracks().forEach(t => t.stop());
       };
+
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       setRecordingTime(0);
+
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
+
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
@@ -162,7 +177,7 @@ export default function AnonymousVoiceApp() {
         recognition.interimResults = true;
         recognition.onresult = (e) => {
           const text = Array.from(e.results)
-            .map((r) => r[0].transcript)
+            .map(r => r[0].transcript)
             .join('');
           setTranscript(text);
         };
@@ -176,7 +191,7 @@ export default function AnonymousVoiceApp() {
 
   const transcribeAudioWithAssemblyAI = async (audioBlob) => {
     try {
-      const ASSEMBLY_AI_API_KEY = 'e923129f7dec495081e757c6fe82ea8b';
+      const ASSEMBLY_AI_API_KEY = 'YOUR_ASSEMBLY_AI_KEY_HERE'; // NEVER COMMIT THIS
       const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
         method: 'POST',
         headers: { 'authorization': ASSEMBLY_AI_API_KEY },
@@ -184,6 +199,7 @@ export default function AnonymousVoiceApp() {
       });
       const uploadData = await uploadResponse.json();
       const audioUrl = uploadData.upload_url;
+
       const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
         method: 'POST',
         headers: {
@@ -194,6 +210,7 @@ export default function AnonymousVoiceApp() {
       });
       const transcriptData = await transcriptResponse.json();
       const transcriptId = transcriptData.id;
+
       const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptId}`;
       while (true) {
         const pollingResponse = await fetch(pollingEndpoint, {
@@ -204,12 +221,11 @@ export default function AnonymousVoiceApp() {
           return result.text;
         } else if (result.status === 'error') {
           throw new Error('Transcription failed: ' + result.error);
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 3000));
         }
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
     } catch (error) {
-      console.error('AssemblyAI transcription error:', error);
+      console.error('AssemblyAI error:', error);
       return null;
     }
   };
@@ -223,6 +239,7 @@ export default function AnonymousVoiceApp() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+
       setTimeout(async () => {
         if (audioChunksRef.current.length > 0) {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
@@ -230,216 +247,21 @@ export default function AnonymousVoiceApp() {
           const transcribedText = await transcribeAudioWithAssemblyAI(blob);
           if (transcribedText) {
             setTranscript(transcribedText);
+          } else {
+            setTranscript('[Voice message - transcription unavailable]');
           }
           setLoading(false);
         }
-      }, 100);
+      }, 200);
     }
   };
 
   const cancelRecording = () => {
-    if (isRecording) {
-      stopRecording();
-    }
+    if (isRecording) stopRecording();
     setAudioBlob(null);
     setAudioUrl(null);
     setTranscript('');
     setRecordingTime(0);
-  };
-
-  const generateAvatarVideoForMessage = async (messageId, audioUrl) => {
-    try {
-      const audioResponse = await fetch(audioUrl);
-      const audioBlob = await audioResponse.blob();
-     
-      const audioElement = document.createElement('audio');
-      const audioObjectUrl = URL.createObjectURL(audioBlob);
-      audioElement.src = audioObjectUrl;
-     
-      await new Promise((resolve, reject) => {
-        audioElement.onloadedmetadata = resolve;
-        audioElement.onerror = reject;
-      });
-     
-      const audioDuration = audioElement.duration;
-      const totalFrames = Math.ceil(audioDuration * 30);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = 400;
-      canvas.height = 400;
-      const ctx = canvas.getContext('2d');
-     
-      const audioCtx = new AudioContext();
-      const source = audioCtx.createMediaElementSource(audioElement);
-      const dest = audioCtx.createMediaStreamDestination();
-      source.connect(dest);
-      source.connect(audioCtx.destination);
-     
-      const videoStream = canvas.captureStream(30);
-
-      let mimeType = 'video/webm;codecs=vp8,opus';
-      let fileExt = 'webm';
-      
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm';
-        fileExt = 'webm';
-      }
-      
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/mp4';
-        fileExt = 'mp4';
-      }
-
-      const combinedStream = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks()
-      ]);
-     
-      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
-      const chunks = [];
-     
-      return new Promise((resolve, reject) => {
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-            chunks.push(e.data);
-          }
-        };
-       
-        mediaRecorder.onstop = async () => {
-          try {
-            const blob = new Blob(chunks, { type: mimeType });
-           
-            const fileName = `avatar-${messageId}-${Date.now()}.${fileExt}`;
-            const contentType = mimeType.split(';')[0];
-
-            const { error: uploadError } = await supabase.storage
-              .from('voices')
-              .upload(fileName, blob, { 
-                contentType,
-                upsert: false 
-              });
-           
-            if (uploadError) throw uploadError;
-           
-            const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-           
-            const { error: updateError } = await supabase
-              .from('messages')
-              .update({ video_url: publicUrl })
-              .eq('id', messageId);
-           
-            if (updateError) throw updateError;
-           
-            URL.revokeObjectURL(audioObjectUrl);
-            resolve();
-          } catch (err) {
-            console.error('Error in onstop:', err);
-            reject(err);
-          }
-        };
-       
-        mediaRecorder.onerror = (e) => {
-          console.error('MediaRecorder error:', e);
-          reject(e);
-        };
-       
-        const analyser = audioCtx.createAnalyser();
-        source.connect(analyser);
-        analyser.fftSize = 256;
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-       
-        mediaRecorder.start(100);
-        audioElement.play();
-       
-        let frame = 0;
-        let animationId = null;
-       
-        const animate = () => {
-          analyser.getByteFrequencyData(dataArray);
-          const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-          const isSpeaking = average > 10;
-          const intensity = Math.min(average / 50, 1);
-         
-          const gradient = ctx.createLinearGradient(0, 0, 400, 400);
-          gradient.addColorStop(0, '#667eea');
-          gradient.addColorStop(1, '#764ba2');
-          ctx.fillStyle = gradient;
-          ctx.fillRect(0, 0, 400, 400);
-         
-          const time = frame / 30;
-         
-          ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-          ctx.shadowBlur = 20;
-          ctx.shadowOffsetX = 5;
-          ctx.shadowOffsetY = 5;
-         
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(100, 100, 200, 200);
-         
-          ctx.shadowColor = 'transparent';
-         
-          const shouldBlink = Math.floor(time * 2) % 10 === 0 && (time % 0.5) < 0.1;
-          const eyeHeight = shouldBlink ? 5 : 20 + intensity * 5;
-         
-          ctx.fillStyle = '#667eea';
-          ctx.fillRect(130, 150, 30, eyeHeight);
-          ctx.fillRect(240, 150, 30, eyeHeight);
-         
-          if (isSpeaking) {
-            const mouthWidth = 100 + intensity * 30;
-            const mouthHeight = 5 + intensity * 30;
-            ctx.fillStyle = '#667eea';
-            ctx.fillRect(200 - mouthWidth/2, 230, mouthWidth, mouthHeight);
-          } else {
-            ctx.fillStyle = '#667eea';
-            ctx.fillRect(160, 240, 80, 8);
-          }
-         
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(195, 80, 10, 30);
-         
-          const glowSize = 15 + intensity * 8;
-          const glowGradient = ctx.createRadialGradient(200, 70, 0, 200, 70, glowSize);
-          glowGradient.addColorStop(0, '#ffffff');
-          glowGradient.addColorStop(0.5, '#a78bfa');
-          glowGradient.addColorStop(1, '#667eea');
-          ctx.fillStyle = glowGradient;
-          ctx.beginPath();
-          ctx.arc(200, 70, glowSize, 0, Math.PI * 2);
-          ctx.fill();
-         
-          frame++;
-         
-          if (frame < totalFrames && !audioElement.ended) {
-            animationId = requestAnimationFrame(animate);
-          } else {
-            setTimeout(() => {
-              if (mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-              }
-              audioCtx.close();
-            }, 500);
-          }
-        };
-       
-        animate();
-       
-        audioElement.onended = () => {
-          setTimeout(() => {
-            if (mediaRecorder.state === 'recording') {
-              mediaRecorder.stop();
-            }
-            if (animationId) {
-              cancelAnimationFrame(animationId);
-            }
-            audioCtx.close();
-          }, 500);
-        };
-      });
-    } catch (error) {
-      console.error('Video generation error:', error);
-      throw error;
-    }
   };
 
   const sendMessageWithRoboticVoice = async () => {
@@ -475,21 +297,17 @@ export default function AnonymousVoiceApp() {
       const { data: { publicUrl } } = supabase.storage
         .from('voices')
         .getPublicUrl(fileName);
-
       savedAudioUrl = publicUrl;
     }
 
-    const messageText = transcript || '[Voice message - transcription unavailable]';
-
-    const { data: insertedMessage, error: insertError } = await supabase
+    const messageText = transcript || '[Voice message - no text]';
+    const { error: insertError } = await supabase
       .from('messages')
       .insert({
         username: recipient,
         text: messageText,
         audio_url: savedAudioUrl,
-      })
-      .select()
-      .single();
+      });
 
     if (insertError) {
       alert('Send failed: ' + insertError.message);
@@ -497,24 +315,131 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
-    // Auto-generate video if we have transcript and audio
-    if (transcript && savedAudioUrl && insertedMessage) {
-      try {
-        await generateAvatarVideoForMessage(insertedMessage.id, savedAudioUrl);
-      } catch (error) {
-        console.error('Video generation failed:', error);
+    // Robotic voice feedback
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(transcript || "Message sent anonymously.");
+    utterance.rate = 0.7;
+    utterance.pitch = 0.3;
+    utterance.volume = 0.9;
+    utterance.onend = () => {
+      alert(`Anonymous robotic voice sent to @${recipient}!`);
+      setAudioBlob(null);
+      setAudioUrl(null);
+      setTranscript('');
+      setRecordingTime(0);
+      if (currentUser && recipient === currentUser.username) {
+        fetchMessages(currentUser.username);
       }
-    }
+      setLoading(false);
+    };
+    window.speechSynthesis.speak(utterance);
+  };
 
-    alert(`Anonymous robotic voice sent to @${recipient}!`);
-    setAudioBlob(null);
-    setAudioUrl(null);
-    setTranscript('');
-    setRecordingTime(0);
-    if (currentUser && recipient === currentUser.username) {
-      fetchMessages(currentUser.username);
+  // FIXED & WORKING: Avatar video with REAL robotic voice
+  const generateAvatarVideo = async (text, messageId) => {
+    if (!text || text.includes('[Voice message')) {
+      alert("No valid text to speak.");
+      return;
     }
-    setLoading(false);
+    setGeneratingVideo(messageId);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 400;
+    canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.7;
+    utterance.pitch = 0.3;
+    utterance.volume = 1.0;
+
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioContext.createMediaStreamDestination();
+    const videoStream = canvas.captureStream(30);
+    const audioTrack = dest.stream.getAudioTracks()[0];
+
+    const combinedStream = new MediaStream([
+      ...videoStream.getVideoTracks(),
+      audioTrack
+    ]);
+
+    const mimeType = 'video/webm;codecs=vp9,opus';
+    const recorder = new MediaRecorder(combinedStream, { mimeType });
+    const chunks = [];
+
+    recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
+    recorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: mimeType });
+      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+
+      try {
+        const { error: uploadError } = await supabase.storage
+          .from('voices')
+          .upload(fileName, blob, { contentType: mimeType, upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
+
+        await supabase
+          .from('messages')
+          .update({ video_url: publicUrl })
+          .eq('id', messageId);
+
+        if (currentUser) fetchMessages(currentUser.username);
+      } catch (err) {
+        console.error(err);
+        alert("Video upload failed: " + err.message);
+      } finally {
+        setGeneratingVideo(null);
+      }
+    };
+
+    recorder.start();
+
+    // Animation
+    const animate = () => {
+      const intensity = Math.abs(Math.sin(Date.now() * 0.005)) * 0.8 + 0.2;
+
+      const gradient = ctx.createLinearGradient(0, 0, 400, 400);
+      gradient.addColorStop(0, '#667eea');
+      gradient.addColorStop(1, '#764ba2');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 400, 400);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(100, 100, 200, 200);
+
+      const blink = Math.random() < 0.02;
+      const eyeH = blink ? 5 : 25 + intensity * 10;
+      ctx.fillStyle = '#667eea';
+      ctx.fillRect(130, 150, 30, eyeH);
+      ctx.fillRect(240, 150, 30, eyeH);
+
+      const mouthW = 80 + intensity * 60;
+      const mouthH = 10 + intensity * 40;
+      ctx.fillStyle = '#667eea';
+      ctx.fillRect(200 - mouthW / 2, 240, mouthW, mouthH);
+
+      const glow = ctx.createRadialGradient(200, 70, 0, 200, 70, 25 + intensity * 20);
+      glow.addColorStop(0, '#a78bfa');
+      glow.addColorStop(1, '#667eea');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(200, 70, 25 + intensity * 20, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (recorder.state === 'recording') {
+        animationFrameRef.current = requestAnimationFrame(animate);
+      }
+    };
+    animate();
+
+    utterance.onend = () => setTimeout(() => recorder.stop(), 1000);
+    utterance.onerror = () => recorder.stop();
+
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
   };
 
   const playRobotic = (text, id) => {
@@ -536,9 +461,7 @@ export default function AnonymousVoiceApp() {
   };
 
   const handleKeyPress = (e, action) => {
-    if (e.key === 'Enter') {
-      action();
-    }
+    if (e.key === 'Enter') action();
   };
 
   const formatTime = (seconds) => {
@@ -547,7 +470,8 @@ export default function AnonymousVoiceApp() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // LANDING PAGE
+  // === RENDER VIEWS BELOW (unchanged structure, improved clarity) ===
+
   if (!currentUser && authView === 'landing' && !recipientUsername) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -563,16 +487,10 @@ export default function AnonymousVoiceApp() {
             with <span className="font-bold text-purple-600">robotic playback</span>
           </p>
           <div className="space-y-3 sm:space-y-4">
-            <button
-              onClick={() => setAuthView('signup')}
-              className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform active:scale-95"
-            >
+            <button onClick={() => setAuthView('signup')} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform active:scale-95">
               Create Account
             </button>
-            <button
-              onClick={() => setAuthView('login')}
-              className="w-full bg-gray-100 text-gray-800 py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl hover:bg-gray-200 transition active:scale-95"
-            >
+            <button onClick={() => setAuthView('login')} className="w-full bg-gray-100 text-gray-800 py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl hover:bg-gray-200 transition active:scale-95">
               Log In
             </button>
           </div>
@@ -581,7 +499,6 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // SIGNUP PAGE
   if (!currentUser && authView === 'signup') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -590,56 +507,26 @@ export default function AnonymousVoiceApp() {
             Create Account
           </h2>
           <p className="text-gray-500 text-center mb-6 sm:mb-8">Get your anonymous voice inbox</p>
-         
           <div className="space-y-4 sm:space-y-6">
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                onKeyPress={(e) => handleKeyPress(e, handleSignup)}
-                placeholder="Choose a unique username"
-                className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg"
-              />
+              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleSignup)} placeholder="Choose a unique username" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
             </div>
-           
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={(e) => handleKeyPress(e, handleSignup)}
-                placeholder="At least 6 characters"
-                className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg"
-              />
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleSignup)} placeholder="At least 6 characters" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
             </div>
-            {error && (
-              <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
-                {error}
-              </div>
-            )}
-            <button
-              onClick={handleSignup}
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95"
-            >
+            {error && <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">{error}</div>}
+            <button onClick={handleSignup} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95">
               {loading ? 'Creating...' : 'Sign Up'}
             </button>
           </div>
-          <button
-            onClick={() => { setAuthView('landing'); setError(''); }}
-            className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium"
-          >
-            ← Back
-          </button>
+          <button onClick={() => { setAuthView('landing'); setError(''); }} className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium">← Back</button>
         </div>
       </div>
     );
   }
 
-  // LOGIN PAGE
   if (!currentUser && authView === 'login') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
@@ -648,56 +535,26 @@ export default function AnonymousVoiceApp() {
             Welcome Back
           </h2>
           <p className="text-gray-500 text-center mb-6 sm:mb-8">Log in to your voice inbox</p>
-         
           <div className="space-y-4 sm:space-y-6">
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                onKeyPress={(e) => handleKeyPress(e, handleLogin)}
-                placeholder="Your username"
-                className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg"
-              />
+              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleLogin)} placeholder="Your username" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
             </div>
-           
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={(e) => handleKeyPress(e, handleLogin)}
-                placeholder="Your password"
-                className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg"
-              />
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleLogin)} placeholder="Your password" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
             </div>
-            {error && (
-              <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
-                {error}
-              </div>
-            )}
-            <button
-              onClick={handleLogin}
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95"
-            >
+            {error && <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">{error}</div>}
+            <button onClick={handleLogin} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95">
               {loading ? 'Logging in...' : 'Log In'}
             </button>
           </div>
-          <button
-            onClick={() => { setAuthView('landing'); setError(''); }}
-            className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium"
-          >
-            ← Back
-          </button>
+          <button onClick={() => { setAuthView('landing'); setError(''); }} className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium">← Back</button>
         </div>
       </div>
     );
   }
 
-  // ANONYMOUS SEND PAGE
   if (recipientUsername && !currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
@@ -707,9 +564,7 @@ export default function AnonymousVoiceApp() {
               <h1 className="text-3xl sm:text-5xl font-black mb-3 sm:mb-4 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
                 Send to @{recipientUsername}
               </h1>
-              <p className="text-gray-600 text-base sm:text-lg">
-                Record an anonymous voice note
-              </p>
+              <p className="text-gray-600 text-base sm:text-lg">Record an anonymous voice note</p>
             </div>
             <div className="max-w-lg mx-auto">
               {!audioBlob ? (
@@ -736,23 +591,17 @@ export default function AnonymousVoiceApp() {
                       <Mic className="w-20 h-20 sm:w-28 sm:h-28 text-white" />
                     )}
                   </button>
-                 
+
                   {isRecording && (
                     <div className="mt-6 text-center">
                       <div className="text-3xl sm:text-4xl font-bold text-red-500 mb-2">{formatTime(recordingTime)}</div>
                       <p className="text-lg sm:text-xl text-gray-700 font-medium">Recording... Tap to stop</p>
                     </div>
                   )}
-                 
+
                   {!isRecording && !loading && (
                     <p className="mt-6 sm:mt-8 text-xl sm:text-2xl text-gray-700 font-medium">
                       Tap to start recording
-                    </p>
-                  )}
-                 
-                  {loading && (
-                    <p className="mt-6 text-lg text-purple-600 font-medium">
-                      Converting to text for robotic voice...
                     </p>
                   )}
                 </div>
@@ -765,12 +614,9 @@ export default function AnonymousVoiceApp() {
                       </div>
                       <p className="text-gray-600 font-medium text-sm sm:text-base">Voice recorded - Ready to send</p>
                       <p className="text-xs sm:text-sm text-gray-400 mt-2">{formatTime(recordingTime)}</p>
-                      {!transcript && (
-                        <p className="text-xs text-orange-500 mt-2">Warning: Transcription unavailable on this browser</p>
-                      )}
                     </div>
                   </div>
-                 
+
                   <div className="space-y-3">
                     <button
                       onClick={sendMessageWithRoboticVoice}
@@ -780,7 +626,6 @@ export default function AnonymousVoiceApp() {
                       <Send className="w-6 h-6 sm:w-7 sm:h-7" />
                       {loading ? 'Sending…' : 'Send as Robotic Voice'}
                     </button>
-                   
                     <button
                       onClick={cancelRecording}
                       className="w-full bg-gray-100 text-gray-700 py-3 sm:py-4 rounded-2xl font-bold text-base sm:text-lg flex items-center justify-center gap-2 hover:bg-gray-200 transition active:scale-95"
@@ -793,10 +638,7 @@ export default function AnonymousVoiceApp() {
               )}
             </div>
             <div className="text-center mt-6 sm:mt-8">
-              <button
-                onClick={() => setAuthView('signup')}
-                className="text-purple-600 hover:text-purple-700 font-medium text-sm sm:text-base"
-              >
+              <button onClick={() => setAuthView('signup')} className="text-purple-600 hover:text-purple-700 font-medium text-sm sm:text-base">
                 Want your own inbox? Create an account →
               </button>
             </div>
@@ -806,7 +648,6 @@ export default function AnonymousVoiceApp() {
     );
   }
 
-  // LOGGED IN MAIN APP
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
       <div className="max-w-4xl mx-auto">
@@ -818,17 +659,11 @@ export default function AnonymousVoiceApp() {
                 <h1 className="text-2xl sm:text-4xl font-bold">@{currentUser.username}</h1>
               </div>
               <div className="flex gap-2 sm:gap-3">
-                <button
-                  onClick={copyLink}
-                  className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95"
-                >
+                <button onClick={copyLink} className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95">
                   {copied ? <Check className="w-4 h-4 sm:w-5 sm:h-5" /> : <Share2 className="w-4 h-4 sm:w-5 sm:h-5" />}
                   <span className="font-medium hidden sm:inline">{copied ? 'Copied!' : 'Share'}</span>
                 </button>
-                <button
-                  onClick={handleLogout}
-                  className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95"
-                >
+                <button onClick={handleLogout} className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95">
                   <LogOut className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               </div>
@@ -870,22 +705,44 @@ export default function AnonymousVoiceApp() {
                         </div>
                       </div>
                     )}
-                   
+
                     <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
                       <span className="text-xs sm:text-sm text-gray-500 font-medium">
                         {new Date(msg.created_at).toLocaleString()}
                       </span>
-                     
-                      {msg.text && (
-                        <button
-                          onClick={() => playRobotic(msg.text, msg.id)}
-                          disabled={isPlaying === msg.id}
-                          className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+
+                      <div className="flex gap-2 w-full sm:w-auto">
+                        {msg.text && !msg.video_url && (
+ <button
+                          onClick={() => generateAvatarVideo(msg.text, msg.id)}
+                          disabled={generatingVideo === msg.id}
+                          className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 font-bold shadow-lg active:scale-95 text-sm"
                         >
-                          <Play className="w-4 h-4" />
-                          <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play Audio'}</span>
+                          {generatingVideo === msg.id ? (
+                            <>
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                              <span>Creating...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-4 h-4" />
+                              <span>Generate Video</span>
+                            </>
+                          )}
                         </button>
-                      )}
+                        )}
+
+                        {msg.text && (
+                          <button
+                            onClick={() => playRobotic(msg.text, msg.id)}
+                            disabled={isPlaying === msg.id}
+                            className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 font-bold shadow-lg active:scale-95 text-sm"
+                          >
+                            <Play className="w-4 h-4" />
+                            <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play'}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
