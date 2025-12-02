@@ -5,7 +5,6 @@ import { createClient } from '@supabase/supabase-js';
 // Put your own keys here
 const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
-
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function AnonymousVoiceApp() {
@@ -194,15 +193,95 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  const stopRecording = () => {
+  const transcribeAudioWithAssemblyAI = async (audioBlob) => {
+    try {
+      const ASSEMBLY_AI_API_KEY = 'e923129f7dec495081e757c6fe82ea8b';
+      
+      // Step 1: Upload audio to AssemblyAI
+      const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
+        method: 'POST',
+        headers: {
+          'authorization': ASSEMBLY_AI_API_KEY,
+        },
+        body: audioBlob,
+      });
+      
+      const uploadData = await uploadResponse.json();
+      const audioUrl = uploadData.upload_url;
+      
+      // Step 2: Request transcription
+      const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
+        method: 'POST',
+        headers: {
+          'authorization': ASSEMBLY_AI_API_KEY,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          audio_url: audioUrl,
+        }),
+      });
+      
+      const transcriptData = await transcriptResponse.json();
+      const transcriptId = transcriptData.id;
+      
+      // Step 3: Poll for transcription result
+      const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptId}`;
+      
+      while (true) {
+        const pollingResponse = await fetch(pollingEndpoint, {
+          headers: {
+            'authorization': ASSEMBLY_AI_API_KEY,
+          },
+        });
+        
+        const result = await pollingResponse.json();
+        
+        if (result.status === 'completed') {
+          return result.text;
+        } else if (result.status === 'error') {
+          throw new Error('Transcription failed: ' + result.error);
+        } else {
+          // Wait 3 seconds before polling again
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+    } catch (error) {
+      console.error('AssemblyAI transcription error:', error);
+      return null;
+    }
+  };
+
+  const stopRecording = async () => {
     if (mediaRecorderRef.current?.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-    }
-    if (recognitionRef.current) recognitionRef.current.stop();
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+      
+      // Stop browser speech recognition
+      if (recognitionRef.current) recognitionRef.current.stop();
+      
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      
+      // Wait for audio blob to be created, then transcribe with AssemblyAI
+      setTimeout(async () => {
+        if (audioChunksRef.current.length > 0) {
+          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          
+          // Show loading indicator
+          setLoading(true);
+          
+          // Try AssemblyAI transcription
+          const transcribedText = await transcribeAudioWithAssemblyAI(blob);
+          
+          if (transcribedText) {
+            setTranscript(transcribedText);
+          }
+          
+          setLoading(false);
+        }
+      }, 100);
     }
   };
 
@@ -217,7 +296,8 @@ export default function AnonymousVoiceApp() {
   };
 
   const sendMessageWithRoboticVoice = async () => {
-    if (!transcript) {
+    // Check if we have audio or transcript
+    if (!transcript && !audioBlob) {
       alert('Please record a voice message first');
       return;
     }
@@ -229,13 +309,16 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
+    // If no transcript but we have audio, send a message indicating voice-only
+    const messageText = transcript || '[Voice message - transcription unavailable]';
+
     setLoading(true);
 
     const { error } = await supabase
       .from('messages')
       .insert({
         username: recipient,
-        text: transcript,
+        text: messageText,
         audio_url: null,
       });
 
@@ -245,15 +328,31 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
-    // Preview the robotic voice for sender
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(transcript);
-    utterance.rate = 0.7;
-    utterance.pitch = 0.3;
-    utterance.volume = 0.9;
+    // Preview the robotic voice for sender (only if we have transcript)
+    if (transcript) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(transcript);
+      utterance.rate = 0.7;
+      utterance.pitch = 0.3;
+      utterance.volume = 0.9;
 
-    utterance.onend = () => {
-      alert(`🤖 Anonymous robotic voice sent to @${recipient}!`);
+      utterance.onend = () => {
+        alert(`🤖 Anonymous robotic voice sent to @${recipient}!`);
+        setAudioBlob(null);
+        setAudioUrl(null);
+        setTranscript('');
+        setRecordingTime(0);
+        
+        if (currentUser && recipient === currentUser.username) {
+          fetchMessages(currentUser.username);
+        }
+        setLoading(false);
+      };
+      
+      window.speechSynthesis.speak(utterance);
+    } else {
+      // No transcript available (mobile Chrome issue), just confirm send
+      alert(`🤖 Anonymous voice sent to @${recipient}!`);
       setAudioBlob(null);
       setAudioUrl(null);
       setTranscript('');
@@ -263,9 +362,7 @@ export default function AnonymousVoiceApp() {
         fetchMessages(currentUser.username);
       }
       setLoading(false);
-    };
-    
-    window.speechSynthesis.speak(utterance);
+    }
   };
 
   const playRobotic = (text, id) => {
@@ -478,13 +575,21 @@ export default function AnonymousVoiceApp() {
                 <div className="text-center">
                   <button
                     onClick={toggleRecording}
+                    disabled={loading}
                     className={`w-48 h-48 sm:w-56 sm:h-56 rounded-full shadow-2xl transition-all mx-auto flex items-center justify-center ${
                       isRecording
                         ? 'bg-red-500 animate-pulse'
+                        : loading
+                        ? 'bg-gray-400 cursor-not-allowed'
                         : 'bg-gradient-to-br from-indigo-500 to-purple-500 hover:scale-105 active:scale-95'
                     }`}
                   >
-                    {isRecording ? (
+                    {loading ? (
+                      <div className="text-white text-center">
+                        <div className="animate-spin rounded-full h-20 w-20 border-b-4 border-white mx-auto mb-2"></div>
+                        <p className="text-sm">Transcribing...</p>
+                      </div>
+                    ) : isRecording ? (
                       <Square className="w-20 h-20 sm:w-28 sm:h-28 text-white" />
                     ) : (
                       <Mic className="w-20 h-20 sm:w-28 sm:h-28 text-white" />
@@ -498,9 +603,15 @@ export default function AnonymousVoiceApp() {
                     </div>
                   )}
                   
-                  {!isRecording && (
+                  {!isRecording && !loading && (
                     <p className="mt-6 sm:mt-8 text-xl sm:text-2xl text-gray-700 font-medium">
                       👆 Tap to start recording
+                    </p>
+                  )}
+                  
+                  {loading && (
+                    <p className="mt-6 text-lg text-purple-600 font-medium">
+                      🤖 Converting to text for robotic voice...
                     </p>
                   )}
                 </div>
@@ -513,6 +624,9 @@ export default function AnonymousVoiceApp() {
                       </div>
                       <p className="text-gray-600 font-medium text-sm sm:text-base">🤖 Voice recorded - Ready to send</p>
                       <p className="text-xs sm:text-sm text-gray-400 mt-2">{formatTime(recordingTime)}</p>
+                      {!transcript && (
+                        <p className="text-xs text-orange-500 mt-2">⚠️ Transcription unavailable on this browser</p>
+                      )}
                     </div>
                   </div>
                   
