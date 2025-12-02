@@ -25,6 +25,8 @@ export default function AnonymousVoiceApp() {
   const [error, setError] = useState('');
   const [recordingTime, setRecordingTime] = useState(0);
 
+  const [generatingVideo, setGeneratingVideo] = useState(null);
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
@@ -362,6 +364,124 @@ export default function AnonymousVoiceApp() {
         fetchMessages(currentUser.username);
       }
       setLoading(false);
+    }
+  };
+
+  const generateAvatarVideo = async (text, messageId) => {
+    setGeneratingVideo(messageId);
+    
+    try {
+      // Create a canvas to generate animated avatar
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 400;
+      const ctx = canvas.getContext('2d');
+      
+      // Prepare for recording
+      const stream = canvas.captureStream(30); // 30 FPS
+      const audioCtx = new AudioContext();
+      const dest = audioCtx.createMediaStreamDestination();
+      
+      // Create robotic voice
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.7;
+      utterance.pitch = 0.3;
+      utterance.volume = 0.9;
+      
+      // Start recording video + audio
+      const mediaRecorder = new MediaRecorder(stream);
+      const chunks = [];
+      
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        
+        // Upload video to Supabase storage
+        const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+        const { error: uploadError } = await supabase.storage
+          .from('voices')
+          .upload(fileName, blob, { contentType: 'video/webm', upsert: false });
+        
+        if (!uploadError) {
+          const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
+          
+          // Update message with video URL
+          await supabase
+            .from('messages')
+            .update({ video_url: publicUrl })
+            .eq('id', messageId);
+          
+          // Refresh messages
+          if (currentUser) {
+            fetchMessages(currentUser.username);
+          }
+        }
+        
+        setGeneratingVideo(null);
+      };
+      
+      mediaRecorder.start();
+      
+      // Animate avatar while speaking
+      let frame = 0;
+      const animate = () => {
+        // Clear canvas
+        ctx.fillStyle = '#667eea';
+        ctx.fillRect(0, 0, 400, 400);
+        
+        // Draw robot face
+        const time = frame / 30;
+        
+        // Head
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(100, 100, 200, 200);
+        
+        // Eyes (animate based on speech)
+        const eyeSize = 20 + Math.sin(time * 10) * 5;
+        ctx.fillStyle = '#667eea';
+        ctx.fillRect(140, 150, eyeSize, eyeSize);
+        ctx.fillRect(240, 150, eyeSize, eyeSize);
+        
+        // Mouth (animate like speaking)
+        const mouthHeight = 10 + Math.abs(Math.sin(time * 15)) * 20;
+        ctx.fillStyle = '#667eea';
+        ctx.fillRect(150, 220, 100, mouthHeight);
+        
+        // Antenna
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(195, 80, 10, 30);
+        ctx.beginPath();
+        ctx.arc(200, 70, 15, 0, Math.PI * 2);
+        ctx.fill();
+        
+        frame++;
+        
+        if (frame < 180) { // 6 seconds max
+          requestAnimationFrame(animate);
+        } else {
+          mediaRecorder.stop();
+        }
+      };
+      
+      animate();
+      
+      // Play robotic voice
+      window.speechSynthesis.cancel();
+      utterance.onend = () => {
+        setTimeout(() => {
+          if (mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+        }, 500);
+      };
+      window.speechSynthesis.speak(utterance);
+      
+    } catch (error) {
+      console.error('Video generation error:', error);
+      setGeneratingVideo(null);
+      alert('Failed to generate video. Please try again.');
     }
   };
 
@@ -715,28 +835,63 @@ export default function AnonymousVoiceApp() {
               <div className="space-y-4 sm:space-y-6">
                 {messages.map((msg) => (
                   <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-4 sm:p-8 shadow-lg hover:shadow-xl transition-shadow">
-                    <div className="bg-white rounded-xl p-4 sm:p-6 mb-4 sm:mb-6 shadow-md flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-2 sm:mb-3 flex items-center justify-center">
-                          <Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
-                        </div>
-                        <p className="text-gray-500 text-xs sm:text-sm">🤖 Anonymous Voice Message</p>
+                    {msg.video_url ? (
+                      <div className="mb-4 sm:mb-6">
+                        <video 
+                          controls 
+                          src={msg.video_url} 
+                          className="w-full rounded-xl shadow-md"
+                          poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23667eea' width='400' height='400'/%3E%3C/svg%3E"
+                        />
                       </div>
-                    </div>
+                    ) : (
+                      <div className="bg-white rounded-xl p-4 sm:p-6 mb-4 sm:mb-6 shadow-md flex items-center justify-center">
+                        <div className="text-center">
+                          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-2 sm:mb-3 flex items-center justify-center">
+                            <Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
+                          </div>
+                          <p className="text-gray-500 text-xs sm:text-sm">🤖 Anonymous Voice Message</p>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
                       <span className="text-xs sm:text-sm text-gray-500 font-medium">
                         📅 {new Date(msg.created_at).toLocaleString()}
                       </span>
-                      {msg.text && (
-                        <button
-                          onClick={() => playRobotic(msg.text, msg.id)}
-                          disabled={isPlaying === msg.id}
-                          className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-pink-600 text-white px-5 sm:px-6 py-3 rounded-xl flex items-center justify-center gap-2 sm:gap-3 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95"
-                        >
-                          <Play className="w-4 h-4 sm:w-5 sm:h-5" />
-                          <span className="text-sm sm:text-base">{isPlaying === msg.id ? '🤖 Playing...' : '🤖 Play Voice'}</span>
-                        </button>
-                      )}
+                      
+                      <div className="flex gap-2 w-full sm:w-auto">
+                        {msg.text && !msg.video_url && (
+                          <button
+                            onClick={() => generateAvatarVideo(msg.text, msg.id)}
+                            disabled={generatingVideo === msg.id}
+                            className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+                          >
+                            {generatingVideo === msg.id ? (
+                              <>
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                <span>Creating...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-4 h-4" />
+                                <span>Generate Video</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                        
+                        {msg.text && (
+                          <button
+                            onClick={() => playRobotic(msg.text, msg.id)}
+                            disabled={isPlaying === msg.id}
+                            className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+                          >
+                            <Play className="w-4 h-4" />
+                            <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play'}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
