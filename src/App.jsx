@@ -78,7 +78,11 @@ export default function AnonymousVoiceApp() {
       .eq('username', user)
       .order('created_at', { ascending: false });
 
-    setMessages(data || []);
+    // Safely update messages without overwriting if we are in a "protected" state
+    // (Double check to prevent race conditions)
+    if (!isRefreshingAfterGeneration) {
+        setMessages(data || []);
+    }
   };
 
   const handleSignup = async () => {
@@ -96,7 +100,6 @@ export default function AnonymousVoiceApp() {
 
     setLoading(true);
 
-    // FIX: Use maybeSingle() to handle "no user found" gracefully (returns null instead of error)
     const { data: existing } = await supabase
       .from('users')
       .select('username')
@@ -132,7 +135,6 @@ export default function AnonymousVoiceApp() {
     setError('');
     setLoading(true);
 
-    // FIX: Use maybeSingle() to handle invalid credentials gracefully (returns null instead of 406 error)
     const { data, error: loginError } = await supabase
       .from('users')
       .select('username')
@@ -362,6 +364,9 @@ export default function AnonymousVoiceApp() {
     setGeneratingVideo(messageId);
     setVideoProgress('Starting...');
     
+    // 1. Lock auto-refresh immediately to prevent overwrites
+    setIsRefreshingAfterGeneration(true);
+    
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
@@ -532,7 +537,7 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-      // 1. Update database
+      // 2. Update database
       const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -542,34 +547,23 @@ export default function AnonymousVoiceApp() {
 
       console.log('[DEBUG] Database updated with video_url for message:', messageId);
 
-      // 2. Optimistically update UI immediately
+      // 3. Optimistically update UI immediately (THIS IS THE SOURCE OF TRUTH FOR NOW)
       setMessages(prev =>
         prev.map(m => (m.id === messageId ? { ...m, video_url: publicUrl } : m))
       );
 
-      // 3. Clear generation state + switch tab
+      // 4. Clear generation state + switch tab
       setGeneratingVideo(null);
       setVideoProgress('');
       setActiveTab('videos');
 
-      // 4. Prevent auto-refresh from racing and overwriting our optimistic update
-      setIsRefreshingAfterGeneration(true);
-
-      // 5. Do a single, safe background refresh after React has committed
-      setTimeout(async () => {
-        try {
-          console.log('[DEBUG] Post-generation background refresh...');
-          // FIXED: Use standard JS check to avoid build errors
-          if (currentUser && currentUser.username) {
-            await fetchMessages(currentUser.username); 
-          }
-        } catch (err) {
-          console.error('Background refresh failed:', err);
-        } finally {
-          // Always release the cooldown
+      // 5. Keep the auto-refresh PAUSED for 10 seconds.
+      // This prevents the background fetch from fetching stale data (old data without video)
+      // and overwriting our valid optimistic update.
+      setTimeout(() => {
+          console.log('[DEBUG] Re-enabling auto-refresh');
           setIsRefreshingAfterGeneration(false);
-        }
-      }, 1000); 
+      }, 10000); 
 
       // 6. Notify user
       setTimeout(() => {
@@ -579,6 +573,7 @@ export default function AnonymousVoiceApp() {
     } catch (error) {
       console.error('Video generation error:', error);
       alert('Failed to generate video: ' + error.message);
+      setIsRefreshingAfterGeneration(false); // Release lock on error
     } finally {
       setGeneratingVideo(null);
       setVideoProgress('');
