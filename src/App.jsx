@@ -536,8 +536,7 @@ export default function AnonymousVoiceApp() {
 
       if (dbError) throw new Error('Database save failed: ' + dbError.message);
       
-      // Wait a moment for DB to fully commit
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('[DEBUG] ✅ Database updated with video URL for message', messageId);
       
       // Optimistically update local state immediately
       setMessages(prevMessages => 
@@ -546,15 +545,17 @@ export default function AnonymousVoiceApp() {
         )
       );
       
-      // Also fetch fresh data from DB to ensure sync
-      if (currentUser) {
-        console.log('[DEBUG] 🔄 Refreshing messages from DB to confirm video...');
-        await fetchMessages(currentUser.username);
-      }
-
       setVideoProgress('');
       setGeneratingVideo(null);
       setActiveTab('videos'); 
+      
+      // Wait longer for DB replication, then refresh in background
+      setTimeout(async () => {
+        if (currentUser) {
+          console.log('[DEBUG] 🔄 Background refresh to verify video...');
+          await fetchMessages(currentUser.username);
+        }
+      }, 2000);
       
       // Use setTimeout to show alert after tab switch completes
       setTimeout(() => {
