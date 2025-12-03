@@ -3,8 +3,9 @@ import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, 
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
+
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function AnonymousVoiceApp() {
@@ -15,7 +16,7 @@ export default function AnonymousVoiceApp() {
   const [recipientUsername, setRecipientUsername] = useState('');
   
   // App States
-  const [activeTab, setActiveTab] = useState('inbox'); // New state for tabs
+  const [activeTab, setActiveTab] = useState('inbox'); 
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
@@ -500,18 +501,28 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-      await supabase
+      // Update the database
+      const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
         .eq('id', messageId);
+
+      if (dbError) throw new Error('Database save failed: ' + dbError.message);
       
+      // Update LOCAL state immediately (Fixes "Empty My Videos" bug)
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...msg, video_url: publicUrl } : msg
+        )
+      );
+
+      // Also try to fetch fresh from DB
       if (currentUser) {
-        await fetchMessages(currentUser.username);
+        fetchMessages(currentUser.username);
       }
       
       setVideoProgress('');
-      // UPDATED MESSAGE AS REQUESTED
-      alert('Video uploaded to My Videos');
+      alert('Video uploaded to My Videos! Check the tab.');
       
     } catch (error) {
       console.error('Video generation error:', error);
