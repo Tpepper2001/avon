@@ -346,6 +346,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
+  // !!! IMPORTANT: The 'async' keyword here is critical for build to pass !!!
   const generateAvatarVideo = async (text, messageId) => {
     console.log(`[DEBUG] 🎬 Starting generation for Message ID: ${messageId}`);
     setGeneratingVideo(messageId);
@@ -470,30 +471,42 @@ export default function AnonymousVoiceApp() {
         if (e.data.size > 0) chunks.push(e.data);
       };
       
-      const videoBlob = await new Promise(resolve => {
+      // We use a clean Promise here to handle the recording logic
+      const videoBlob = await new Promise((resolve, reject) => {
         recorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          resolve(blob);
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            resolve(blob);
         };
+        recorder.onerror = (e) => reject(e);
         
         recorder.start();
         
-        // IMPORTANT: We are essentially recording a silent video here
-        // because we cannot capture SpeechSynthesis audio easily.
-        // We simulate the time it takes to speak.
-        
         let frameIndex = 0;
-        const drawFrame = () => {
-          if (frameIndex < frames.length) {
-            createImageBitmap(frames[frameIndex]).then(img => {
-              ctx.drawImage(img, 0, 0);
-              frameIndex++;
-              setTimeout(drawFrame, 1000 / 30);
-            });
-          } else {
-             recorder.stop();
+        
+        // Helper function to draw frames one by one
+        const drawFrame = async () => {
+          if (frameIndex >= frames.length) {
+            recorder.stop();
+            return;
+          }
+          
+          try {
+            // Check if createImageBitmap exists (browser)
+            if (typeof createImageBitmap !== 'undefined') {
+                const img = await createImageBitmap(frames[frameIndex]);
+                ctx.drawImage(img, 0, 0);
+                frameIndex++;
+                setTimeout(drawFrame, 33); // approx 30fps
+            } else {
+                // Fallback or error if not in browser environment
+                reject(new Error("createImageBitmap not supported in this environment"));
+            }
+          } catch (err) {
+            recorder.stop();
+            reject(err);
           }
         };
+        
         drawFrame();
       });
       
@@ -507,6 +520,7 @@ export default function AnonymousVoiceApp() {
       const fileName = `avatar-${messageId}-${Date.now()}.webm`;
       console.log(`[DEBUG] ⬆️ Uploading to Supabase: ${fileName}`);
 
+      // This is where your error was: 'await' requires 'async' on the parent function
       const { error: uploadError } = await supabase.storage
         .from('voices')
         .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
@@ -536,7 +550,6 @@ export default function AnonymousVoiceApp() {
       
       console.log('[DEBUG] ✅ Database Updated.');
 
-      // --- CRITICAL FIX: Fetch fresh data AND update local state ---
       // 1. Optimistic update (fast)
       setMessages(prevMessages => 
         prevMessages.map(msg => 
@@ -545,11 +558,13 @@ export default function AnonymousVoiceApp() {
       );
 
       // 2. Real refresh (reliable)
-      console.log('[DEBUG] 🔄 Force refreshing messages from DB...');
-      await fetchMessages(currentUser.username);
+      if (currentUser) {
+          console.log('[DEBUG] 🔄 Force refreshing messages from DB...');
+          await fetchMessages(currentUser.username);
+      }
 
       setVideoProgress('');
-      setActiveTab('videos'); // Auto-switch tab
+      setActiveTab('videos'); 
       alert('Video uploaded! Switched to My Videos tab.');
       
     } catch (error) {
@@ -1069,3 +1084,4 @@ export default function AnonymousVoiceApp() {
     </div>
   );
 }
+```
