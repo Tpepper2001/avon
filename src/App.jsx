@@ -346,7 +346,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // !!! IMPORTANT: The 'async' keyword here is critical for build to pass !!!
+
   const generateAvatarVideo = async (text, messageId) => {
     console.log(`[DEBUG] 🎬 Starting generation for Message ID: ${messageId}`);
     setGeneratingVideo(messageId);
