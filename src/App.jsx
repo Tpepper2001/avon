@@ -13,7 +13,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_RECORDING_TIME = 120; // 2 minutes
-const REFRESH_INTERVAL = 10000;
+const REFRESH_INTERVAL = 8000; // Poll every 8 seconds
 
 const AUDIO_CONSTRAINTS = {
   audio: {
@@ -79,7 +79,11 @@ export default function AnonymousVoiceApp() {
 
   useEffect(() => {
     if (!user || view !== 'inbox') return;
-    const interval = setInterval(() => { if (!genState.id) fetchMessages(user.username); }, REFRESH_INTERVAL);
+    // Polling interval
+    const interval = setInterval(() => { 
+        if (!genState.id) fetchMessages(user.username); 
+    }, REFRESH_INTERVAL);
+    
     return () => clearInterval(interval);
   }, [user, view, genState.id]);
 
@@ -99,10 +103,35 @@ export default function AnonymousVoiceApp() {
     if (recognitionRef.current) recognitionRef.current.stop();
   };
 
+  // --- SMART FETCH (FIX FOR VIDEO DISAPPEARING) ---
   const fetchMessages = useCallback(async (username) => {
     try {
-      const { data } = await supabase.from('messages').select('*').eq('username', username).order('created_at', { ascending: false });
-      if (data) setMessages(prev => (JSON.stringify(prev) === JSON.stringify(data)) ? prev : data);
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('username', username)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      
+      if (data) {
+        setMessages(prevMessages => {
+          // Merge Logic: Don't overwrite a local video_url with null from DB 
+          // (Handles lag between DB update and next fetch)
+          const merged = data.map(remoteMsg => {
+            const localMsg = prevMessages.find(p => p.id === remoteMsg.id);
+            // If we have a local video URL but remote is null, keep local
+            if (localMsg?.video_url && !remoteMsg.video_url) {
+                return { ...remoteMsg, video_url: localMsg.video_url };
+            }
+            return remoteMsg;
+          });
+
+          // Only update state if something actually changed
+          if (JSON.stringify(prevMessages) === JSON.stringify(merged)) return prevMessages;
+          return merged;
+        });
+      }
     } catch (err) { console.error('Fetch error:', err); }
   }, []);
 
@@ -135,7 +164,7 @@ export default function AnonymousVoiceApp() {
 
   const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); setMessages([]); };
 
-  // --- BULLETPROOF RECORDING LOGIC ---
+  // --- RECORDING LOGIC ---
   const startRecording = async () => {
     setStatus({ ...status, error: null });
     try {
@@ -143,7 +172,6 @@ export default function AnonymousVoiceApp() {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       streamRef.current = stream;
 
-      // Try multiple MIME types for maximum compatibility
       const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
       let selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
       
@@ -155,20 +183,15 @@ export default function AnonymousVoiceApp() {
       
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: selectedMime || 'audio/webm' });
-        
-        // Validate blob has content (prevent empty files)
         if (blob.size < 1000) {
-          setStatus({ ...status, error: 'Recording too short or invalid' });
+          setStatus({ ...status, error: 'Recording too short' });
           return;
         }
-        
         setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
         stream.getTracks().forEach(t => t.stop());
       };
 
-      // USE 1 SECOND TIMESLICE: Stable, prevents memory issues, keeps header reasonably mostly correct
       recorder.start(1000); 
-      
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
       
@@ -201,9 +224,7 @@ export default function AnonymousVoiceApp() {
       
       const { error: upErr } = await supabase.storage
           .from('voices')
-          .upload(fileName, recordingState.blob, { 
-             contentType: recordingState.blob.type 
-          });
+          .upload(fileName, recordingState.blob, { contentType: recordingState.blob.type });
           
       if (upErr) throw upErr;
       
@@ -226,24 +247,22 @@ export default function AnonymousVoiceApp() {
     let ctx = null;
 
     try {
-      // 1. Fetch Blob (Bypasses CORS & prepares for clean decode)
+      // 1. Fetch
       const response = await fetch(remoteAudioUrl);
       if (!response.ok) throw new Error("Failed to fetch audio file");
       const audioBufferData = await response.arrayBuffer();
 
-      // 2. Decode Audio (Standard Web Audio API)
+      // 2. Decode
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await ctx.decodeAudioData(audioBufferData);
 
-      // 3. Setup Processing Graph
+      // 3. Setup Graph
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      
       const dest = ctx.createMediaStreamDestination();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       
-      // Voice Effects
       const voiceConfig = VOICE_TYPES[voiceType.toUpperCase()] || VOICE_TYPES.ROBOT;
       source.detune.value = voiceConfig.detune;
       source.playbackRate.value = voiceConfig.speed;
@@ -282,29 +301,24 @@ export default function AnonymousVoiceApp() {
       const fps = 30;
       const duration = audioBuffer.duration / voiceConfig.speed;
       
-      // 6. Real-time Record Loop
+      // 6. Record Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
-        
         mediaRecorder.start();
         source.start(0);
 
         const startTime = ctx.currentTime;
-        
         const draw = () => {
            const elapsedTime = ctx.currentTime - startTime;
-           
-           if (elapsedTime >= duration) {
+           if (elapsedTime >= duration + 0.5) { // Add 0.5s buffer
               mediaRecorder.stop();
               return;
            }
 
-           // Audio Analysis
            analyser.getByteFrequencyData(dataArray);
            const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
            
-           // Visuals
            const grad = canvasCtx.createLinearGradient(0,0,0,height);
            grad.addColorStop(0, '#0f172a');
            grad.addColorStop(1, voiceConfig.color);
@@ -316,11 +330,9 @@ export default function AnonymousVoiceApp() {
            canvasCtx.translate(width/2, height/2);
            canvasCtx.translate(0, Math.sin(t*3)*15);
 
-           // Head
            canvasCtx.fillStyle = '#e2e8f0';
            canvasCtx.beginPath(); canvasCtx.roundRect(-200,-200,400,400,40); canvasCtx.fill();
 
-           // Eyes
            canvasCtx.fillStyle = voiceConfig.color;
            canvasCtx.shadowBlur=20; canvasCtx.shadowColor=voiceConfig.color;
            const blink = Math.sin(t*2)>0.95?5:60;
@@ -328,13 +340,11 @@ export default function AnonymousVoiceApp() {
            canvasCtx.fillRect(40,-50,80,blink);
            canvasCtx.shadowBlur=0;
 
-           // Mouth
            const mouth = Math.max(10, avg*3);
            canvasCtx.fillStyle = '#1e293b';
            canvasCtx.fillRect(-100,100,200,mouth);
            canvasCtx.restore();
 
-           // Text
            canvasCtx.font='bold 60px sans-serif';
            canvasCtx.fillStyle='rgba(255,255,255,0.8)';
            canvasCtx.textAlign='center';
@@ -350,23 +360,34 @@ export default function AnonymousVoiceApp() {
              canvasCtx.fillText(sub||text.substring(0,25)+'...', width/2, height-300);
            }
 
-           setGenState({ id: msgId, progress: Math.round((elapsedTime/duration)*100), status: 'Recording...' });
+           setGenState({ id: msgId, progress: Math.min(100, Math.round((elapsedTime/duration)*100)), status: 'Recording...' });
            requestAnimationFrame(draw);
         };
         draw();
       });
 
-      // 7. Upload
+      // 7. Upload & DB Update
       setGenState({ id: msgId, progress: 100, status: 'Finalizing...' });
       const videoBlob = new Blob(chunks, { type: 'video/webm' });
       const fileName = `video-${msgId}-${Date.now()}.webm`;
+      
       const { error: upErr } = await supabase.storage.from('voices').upload(fileName, videoBlob);
       if (upErr) throw upErr;
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-      await supabase.from('messages').update({ video_url: publicUrl }).eq('id', msgId);
       
+      // Critical DB Update
+      const { error: dbErr } = await supabase.from('messages').update({ video_url: publicUrl }).eq('id', msgId);
+      
+      if (dbErr) {
+        console.error("DB Update Failed", dbErr);
+        // Fallback: If DB update fails due to permissions, keep it in local state at least
+        alert("Video created but could not save to database (Check RLS Policies). It will disappear on refresh.");
+      }
+      
+      // Optimistic Update
       setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
+      setActiveTab('videos');
 
     } catch (err) {
        console.error(err);
