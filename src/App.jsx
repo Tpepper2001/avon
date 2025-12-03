@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, Trash2 } from 'lucide-react';
+import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, Trash2, Film, Download } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -14,12 +14,14 @@ export default function AnonymousVoiceApp() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [recipientUsername, setRecipientUsername] = useState('');
+  
+  // App States
+  const [activeTab, setActiveTab] = useState('inbox'); // New state for tabs
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
   const [transcript, setTranscript] = useState('');
   const [messages, setMessages] = useState([]);
-  const [view, setView] = useState('create');
   const [copied, setCopied] = useState(false);
   const [isPlaying, setIsPlaying] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -139,8 +141,8 @@ export default function AnonymousVoiceApp() {
     setCurrentUser(null);
     localStorage.removeItem('anon-voice-user');
     setMessages([]);
-    setView('create');
     setAuthView('landing');
+    setActiveTab('inbox');
   };
 
   const toggleRecording = async () => {
@@ -172,12 +174,10 @@ export default function AnonymousVoiceApp() {
       setIsRecording(true);
       setRecordingTime(0);
 
-      // Start timer
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
 
-      // Live transcription
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
@@ -201,43 +201,32 @@ export default function AnonymousVoiceApp() {
     try {
       const ASSEMBLY_AI_API_KEY = 'e923129f7dec495081e757c6fe82ea8b';
       
-      // Step 1: Upload audio to AssemblyAI
       const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
         method: 'POST',
-        headers: {
-          'authorization': ASSEMBLY_AI_API_KEY,
-        },
+        headers: { 'authorization': ASSEMBLY_AI_API_KEY },
         body: audioBlob,
       });
       
       const uploadData = await uploadResponse.json();
       const audioUrl = uploadData.upload_url;
       
-      // Step 2: Request transcription
       const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
         method: 'POST',
         headers: {
           'authorization': ASSEMBLY_AI_API_KEY,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({
-          audio_url: audioUrl,
-        }),
+        body: JSON.stringify({ audio_url: audioUrl }),
       });
       
       const transcriptData = await transcriptResponse.json();
       const transcriptId = transcriptData.id;
-      
-      // Step 3: Poll for transcription result
       const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptId}`;
       
       while (true) {
         const pollingResponse = await fetch(pollingEndpoint, {
-          headers: {
-            'authorization': ASSEMBLY_AI_API_KEY,
-          },
+          headers: { 'authorization': ASSEMBLY_AI_API_KEY },
         });
-        
         const result = await pollingResponse.json();
         
         if (result.status === 'completed') {
@@ -245,7 +234,6 @@ export default function AnonymousVoiceApp() {
         } else if (result.status === 'error') {
           throw new Error('Transcription failed: ' + result.error);
         } else {
-          // Wait 3 seconds before polling again
           await new Promise(resolve => setTimeout(resolve, 3000));
         }
       }
@@ -260,29 +248,18 @@ export default function AnonymousVoiceApp() {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       
-      // Stop browser speech recognition
       if (recognitionRef.current) recognitionRef.current.stop();
-      
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
       
-      // Wait for audio blob to be created, then transcribe with AssemblyAI
       setTimeout(async () => {
         if (audioChunksRef.current.length > 0) {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          
-          // Show loading indicator
           setLoading(true);
-          
-          // Try AssemblyAI transcription
           const transcribedText = await transcribeAudioWithAssemblyAI(blob);
-          
-          if (transcribedText) {
-            setTranscript(transcribedText);
-          }
-          
+          if (transcribedText) setTranscript(transcribedText);
           setLoading(false);
         }
       }, 100);
@@ -290,9 +267,7 @@ export default function AnonymousVoiceApp() {
   };
 
   const cancelRecording = () => {
-    if (isRecording) {
-      stopRecording();
-    }
+    if (isRecording) stopRecording();
     setAudioBlob(null);
     setAudioUrl(null);
     setTranscript('');
@@ -300,22 +275,18 @@ export default function AnonymousVoiceApp() {
   };
 
   const sendMessageWithRoboticVoice = async () => {
-    // Check if we have audio or transcript
     if (!transcript && !audioBlob) {
       alert('Please record a voice message first');
       return;
     }
 
     const recipient = recipientUsername.trim();
-
     if (!recipient) {
       alert('Please enter a recipient username');
       return;
     }
 
-    // If no transcript but we have audio, send a message indicating voice-only
     const messageText = transcript || '[Voice message - transcription unavailable]';
-
     setLoading(true);
 
     const { error } = await supabase
@@ -332,7 +303,6 @@ export default function AnonymousVoiceApp() {
       return;
     }
 
-    // Preview the robotic voice for sender (only if we have transcript)
     if (transcript) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(transcript);
@@ -355,7 +325,6 @@ export default function AnonymousVoiceApp() {
       
       window.speechSynthesis.speak(utterance);
     } else {
-      // No transcript available (mobile Chrome issue), just confirm send
       alert(`🤖 Anonymous voice sent to @${recipient}!`);
       setAudioBlob(null);
       setAudioUrl(null);
@@ -374,26 +343,21 @@ export default function AnonymousVoiceApp() {
     setVideoProgress('Starting...');
     
     try {
-      // Step 1: Create canvas for 3D robot animation
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
       canvas.height = 1080;
       const ctx = canvas.getContext('2d');
       
-      // Step 2: Calculate duration
       const wordCount = text.split(' ').length;
       const estimatedDuration = Math.max(3, (wordCount / 150) * 60 / 0.7);
       const totalFrames = Math.ceil(estimatedDuration * 30);
       
       setVideoProgress('Rendering 3D avatar...');
-      
-      // Step 3: Generate frames with 3D robot
       const frames = [];
       
       for (let frame = 0; frame < totalFrames; frame++) {
         const time = frame / 30;
         
-        // Gradient background
         const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
         gradient.addColorStop(0, '#667eea');
         gradient.addColorStop(1, '#764ba2');
@@ -403,17 +367,14 @@ export default function AnonymousVoiceApp() {
         ctx.save();
         ctx.translate(540, 540);
         
-        // Head bob
         const bobOffset = Math.sin(time * 2) * 20;
         ctx.translate(0, bobOffset);
         
-        // 3D Robot with shadows
         ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
         ctx.shadowBlur = 30;
         ctx.shadowOffsetX = 10;
         ctx.shadowOffsetY = 10;
         
-        // Head
         ctx.fillStyle = '#c0c5ce';
         ctx.fillRect(-200, -200, 400, 400);
         
@@ -421,7 +382,6 @@ export default function AnonymousVoiceApp() {
         ctx.fillStyle = '#e0e5ee';
         ctx.fillRect(-180, -180, 360, 360);
         
-        // Eyes with blink
         const blinkPhase = Math.floor(time * 3) % 10;
         const eyeHeight = blinkPhase === 0 ? 20 : 80;
         
@@ -435,7 +395,6 @@ export default function AnonymousVoiceApp() {
         ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Pupils
         ctx.fillStyle = '#2c5aa0';
         ctx.beginPath();
         ctx.ellipse(-80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
@@ -444,14 +403,12 @@ export default function AnonymousVoiceApp() {
         ctx.ellipse(80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Animated mouth
         const mouthOpen = Math.abs(Math.sin(time * 10)) * 60 + 30;
         ctx.shadowColor = '#000';
         ctx.shadowBlur = 10;
         ctx.fillStyle = '#2c3e50';
         ctx.fillRect(-120, 80, 240, mouthOpen);
         
-        // Antenna
         ctx.fillStyle = '#95a5a6';
         ctx.fillRect(-15, -250, 30, 60);
         
@@ -463,7 +420,6 @@ export default function AnonymousVoiceApp() {
         ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
         ctx.fill();
         
-        // Sound waves
         ctx.shadowBlur = 0;
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
         ctx.lineWidth = 3;
@@ -478,7 +434,6 @@ export default function AnonymousVoiceApp() {
         
         ctx.restore();
         
-        // Save frame
         await new Promise(resolve => {
           canvas.toBlob(blob => {
             frames.push(blob);
@@ -493,7 +448,6 @@ export default function AnonymousVoiceApp() {
       
       setVideoProgress('Adding robotic voice...');
       
-      // Step 4: Create video with MediaRecorder
       const stream = canvas.captureStream(30);
       const chunks = [];
       const recorder = new MediaRecorder(stream, { 
@@ -510,7 +464,6 @@ export default function AnonymousVoiceApp() {
         
         recorder.start();
         
-        // Play robotic voice
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 0.7;
         utterance.pitch = 0.3;
@@ -520,7 +473,6 @@ export default function AnonymousVoiceApp() {
           setTimeout(() => recorder.stop(), 500);
         };
         
-        // Draw frames in sync
         let frameIndex = 0;
         const drawFrame = () => {
           if (frameIndex < frames.length) {
@@ -538,7 +490,6 @@ export default function AnonymousVoiceApp() {
       
       setVideoProgress('Uploading...');
       
-      // Step 5: Upload to Supabase
       const fileName = `avatar-${messageId}-${Date.now()}.webm`;
       const { error: uploadError } = await supabase.storage
         .from('voices')
@@ -550,19 +501,18 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-      // Update message
       await supabase
         .from('messages')
         .update({ video_url: publicUrl })
         .eq('id', messageId);
       
-      // Refresh
       if (currentUser) {
         await fetchMessages(currentUser.username);
       }
       
       setVideoProgress('');
-      alert('🎬 Avatar video generated successfully!');
+      // UPDATED MESSAGE AS REQUESTED
+      alert('Video uploaded to My Videos');
       
     } catch (error) {
       console.error('Video generation error:', error);
@@ -592,9 +542,7 @@ export default function AnonymousVoiceApp() {
   };
 
   const handleKeyPress = (e, action) => {
-    if (e.key === 'Enter') {
-      action();
-    }
+    if (e.key === 'Enter') action();
   };
 
   const formatTime = (seconds) => {
@@ -879,7 +827,7 @@ export default function AnonymousVoiceApp() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
       <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
+        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden min-h-[80vh]">
           {/* Header */}
           <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 sm:p-8 text-white">
             <div className="flex justify-between items-center mb-4 sm:mb-6">
@@ -903,88 +851,180 @@ export default function AnonymousVoiceApp() {
                 </button>
               </div>
             </div>
+            
+            {/* Tabs Navigation */}
+            <div className="flex gap-4 mt-6">
+              <button 
+                onClick={() => setActiveTab('inbox')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all ${
+                  activeTab === 'inbox' 
+                  ? 'bg-white text-purple-600 shadow-lg scale-105' 
+                  : 'bg-white/20 text-white hover:bg-white/30'
+                }`}
+              >
+                <Inbox className="w-4 h-4" />
+                Inbox
+              </button>
+              <button 
+                onClick={() => setActiveTab('videos')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all ${
+                  activeTab === 'videos' 
+                  ? 'bg-white text-purple-600 shadow-lg scale-105' 
+                  : 'bg-white/20 text-white hover:bg-white/30'
+                }`}
+              >
+                <Film className="w-4 h-4" />
+                My Videos
+              </button>
+            </div>
           </div>
 
-          {/* Main Content - INBOX */}
+          {/* Main Content Area */}
           <div className="p-4 sm:p-10">
-            <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8">🤖 Your Anonymous Voice Inbox</h2>
-            {messages.length === 0 ? (
-              <div className="text-center py-12 sm:py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl px-4">
-                <Inbox className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
-                <p className="text-xl sm:text-2xl mb-3 sm:mb-4 text-gray-600 font-medium">No messages yet</p>
-                <p className="text-gray-500 mb-4 sm:mb-6 text-sm sm:text-base">Share your link to receive voice notes:</p>
-                <div className="bg-white px-4 sm:px-6 py-3 sm:py-4 rounded-xl inline-block shadow-md max-w-full">
-                  <p className="font-mono text-purple-600 font-bold break-all text-xs sm:text-base">
-                    {window.location.origin}?send_to={currentUser.username}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4 sm:space-y-6">
-                {messages.map((msg) => (
-                  <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-4 sm:p-8 shadow-lg hover:shadow-xl transition-shadow">
-                    {msg.video_url ? (
-                      <div className="mb-4 sm:mb-6">
-                        <video 
-                          controls 
-                          src={msg.video_url} 
-                          className="w-full rounded-xl shadow-md"
-                          poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23667eea' width='400' height='400'/%3E%3C/svg%3E"
-                        />
-                      </div>
-                    ) : (
-                      <div className="bg-white rounded-xl p-4 sm:p-6 mb-4 sm:mb-6 shadow-md flex items-center justify-center">
-                        <div className="text-center">
-                          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-2 sm:mb-3 flex items-center justify-center">
-                            <Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
-                          </div>
-                          <p className="text-gray-500 text-xs sm:text-sm">🤖 Anonymous Voice Message</p>
-                        </div>
-                      </div>
-                    )}
-                    
-                    <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
-                      <span className="text-xs sm:text-sm text-gray-500 font-medium">
-                        📅 {new Date(msg.created_at).toLocaleString()}
-                      </span>
-                      
-                      <div className="flex gap-2 w-full sm:w-auto">
-                        {msg.text && !msg.video_url && (
-                          <button
-                            onClick={() => generateAvatarVideo(msg.text, msg.id)}
-                            disabled={generatingVideo === msg.id}
-                            className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
-                          >
-                            {generatingVideo === msg.id ? (
-                              <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                <span className="text-xs">{videoProgress || 'Creating...'}</span>
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="w-4 h-4" />
-                                <span>Generate 3D Video</span>
-                              </>
-                            )}
-                          </button>
-                        )}
-                        
-                        {msg.text && (
-                          <button
-                            onClick={() => playRobotic(msg.text, msg.id)}
-                            disabled={isPlaying === msg.id}
-                            className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
-                          >
-                            <Play className="w-4 h-4" />
-                            <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play'}</span>
-                          </button>
-                        )}
-                      </div>
+            
+            {/* INBOX VIEW */}
+            {activeTab === 'inbox' && (
+              <>
+                <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8 flex items-center gap-2">
+                  <Inbox className="w-8 h-8 text-purple-600" />
+                  Your Anonymous Inbox
+                </h2>
+                
+                {messages.length === 0 ? (
+                  <div className="text-center py-12 sm:py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl px-4">
+                    <Inbox className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
+                    <p className="text-xl sm:text-2xl mb-3 sm:mb-4 text-gray-600 font-medium">No messages yet</p>
+                    <p className="text-gray-500 mb-4 sm:mb-6 text-sm sm:text-base">Share your link to receive voice notes:</p>
+                    <div className="bg-white px-4 sm:px-6 py-3 sm:py-4 rounded-xl inline-block shadow-md max-w-full">
+                      <p className="font-mono text-purple-600 font-bold break-all text-xs sm:text-base">
+                        {window.location.origin}?send_to={currentUser.username}
+                      </p>
                     </div>
                   </div>
-                ))}
-              </div>
+                ) : (
+                  <div className="space-y-4 sm:space-y-6">
+                    {messages.map((msg) => (
+                      <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-4 sm:p-8 shadow-lg hover:shadow-xl transition-shadow">
+                        <div className="bg-white rounded-xl p-4 sm:p-6 mb-4 sm:mb-6 shadow-md flex items-center justify-center">
+                          <div className="text-center">
+                            <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-2 sm:mb-3 flex items-center justify-center">
+                              <Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
+                            </div>
+                            <p className="text-gray-500 text-xs sm:text-sm">🤖 Anonymous Voice Message</p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
+                          <span className="text-xs sm:text-sm text-gray-500 font-medium">
+                            📅 {new Date(msg.created_at).toLocaleString()}
+                          </span>
+                          
+                          <div className="flex gap-2 w-full sm:w-auto">
+                            {msg.text && !msg.video_url && (
+                              <button
+                                onClick={() => generateAvatarVideo(msg.text, msg.id)}
+                                disabled={generatingVideo === msg.id}
+                                className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+                              >
+                                {generatingVideo === msg.id ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                    <span className="text-xs">{videoProgress || 'Creating...'}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="w-4 h-4" />
+                                    <span>Generate 3D Video</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
+                            
+                            {msg.video_url && (
+                                <button
+                                  disabled
+                                  className="flex-1 sm:flex-none bg-gray-300 text-gray-500 px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 font-bold text-sm cursor-default"
+                                >
+                                  <Check className="w-4 h-4" />
+                                  <span>Video Generated</span>
+                                </button>
+                            )}
+                            
+                            {msg.text && (
+                              <button
+                                onClick={() => playRobotic(msg.text, msg.id)}
+                                disabled={isPlaying === msg.id}
+                                className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm"
+                              >
+                                <Play className="w-4 h-4" />
+                                <span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play Voice'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
+
+            {/* MY VIDEOS VIEW */}
+            {activeTab === 'videos' && (
+              <>
+                <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8 flex items-center gap-2">
+                  <Film className="w-8 h-8 text-pink-600" />
+                  My Videos
+                </h2>
+                
+                {messages.filter(m => m.video_url).length === 0 ? (
+                  <div className="text-center py-12 sm:py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl px-4">
+                    <Film className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
+                    <p className="text-xl sm:text-2xl mb-3 sm:mb-4 text-gray-600 font-medium">No videos generated yet</p>
+                    <p className="text-gray-500 mb-4 sm:mb-6 text-sm sm:text-base">Go to your Inbox and click "Generate 3D Video" on a message.</p>
+                    <button 
+                      onClick={() => setActiveTab('inbox')}
+                      className="bg-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-purple-700 transition"
+                    >
+                      Go to Inbox
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {messages.filter(m => m.video_url).map((msg) => (
+                      <div key={msg.id} className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
+                        <div className="relative bg-black aspect-square">
+                           <video 
+                              controls 
+                              src={msg.video_url} 
+                              className="w-full h-full object-cover"
+                              poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23667eea' width='400' height='400'/%3E%3C/svg%3E"
+                            />
+                        </div>
+                        <div className="p-4">
+                           <div className="flex justify-between items-start mb-2">
+                              <div>
+                                <p className="text-xs font-bold text-purple-600 uppercase tracking-wide">Anonymous Message</p>
+                                <p className="text-xs text-gray-400 mt-1">{new Date(msg.created_at).toLocaleDateString()}</p>
+                              </div>
+                              <a 
+                                href={msg.video_url} 
+                                download={`video-${msg.id}.webm`}
+                                className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition text-gray-600"
+                                title="Download Video"
+                              >
+                                <Download className="w-4 h-4" />
+                              </a>
+                           </div>
+                           <p className="text-gray-700 text-sm line-clamp-2 italic">"{msg.text}"</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
           </div>
         </div>
       </div>
