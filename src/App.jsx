@@ -135,7 +135,7 @@ export default function AnonymousVoiceApp() {
 
   const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); setMessages([]); };
 
-  // --- RECORDING ---
+  // --- FIXED RECORDING LOGIC ---
   const startRecording = async () => {
     setStatus({ ...status, error: null });
     try {
@@ -143,19 +143,24 @@ export default function AnonymousVoiceApp() {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       streamRef.current = stream;
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/mp4';
+      // Force webm for better compatibility across browsers/ffmpeg
+      const mimeType = 'audio/webm';
       const recorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
 
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      
       recorder.onstop = () => {
+        // Create the blob ONLY when stopped to ensure headers are correct
         const blob = new Blob(audioChunksRef.current, { type: mimeType });
         setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
         stream.getTracks().forEach(t => t.stop());
       };
 
-      recorder.start(100);
+      // REMOVED TIMESLICE: This fixes the "DEMUXER_ERROR" by ensuring a single continuous file header
+      recorder.start(); 
+      
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
       
@@ -165,7 +170,10 @@ export default function AnonymousVoiceApp() {
         r.onresult = e => setRecordingState(p => ({ ...p, transcript: Array.from(e.results).map(res => res[0].transcript).join('') }));
         r.start(); recognitionRef.current = r;
       }
-    } catch (err) { setStatus({ ...status, error: 'Mic access denied' }); }
+    } catch (err) { 
+        console.error(err);
+        setStatus({ ...status, error: 'Mic access denied or not supported' }); 
+    }
   };
 
   const stopRecording = useCallback(() => {
@@ -180,9 +188,11 @@ export default function AnonymousVoiceApp() {
     if (!recordingState.blob) return;
     setStatus({ loading: true, error: null });
     try {
-      const ext = recordingState.blob.type.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `voice-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, recordingState.blob);
+      const fileName = `voice-${Date.now()}.webm`; // Standardize extension
+      const { error: upErr } = await supabase.storage
+          .from('voices')
+          .upload(fileName, recordingState.blob, { contentType: 'audio/webm' }); // Explicit MIME
+          
       if (upErr) throw upErr;
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
@@ -196,46 +206,35 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- FIXED VIDEO GENERATION ---
+  // --- ROBUST VIDEO GENERATION ---
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
-    setGenState({ id: msgId, progress: 0, status: 'Downloading Audio...' });
+    setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
     
-    let localAudioUrl = null;
     let ctx = null;
 
     try {
-      // 1. Fetch Blob (Bypass CORS)
+      // 1. Fetch Blob (Bypasses CORS & prepares for clean decode)
       const response = await fetch(remoteAudioUrl);
       if (!response.ok) throw new Error("Failed to fetch audio file");
-      const audioBlob = await response.blob();
-      localAudioUrl = URL.createObjectURL(audioBlob);
+      const audioBufferData = await response.arrayBuffer();
 
-      // 2. Setup Audio Element
-      const audio = new Audio();
-      audio.src = localAudioUrl;
-      // Do NOT set crossOrigin for blob URLs
-
-      await new Promise((resolve, reject) => {
-         const timeout = setTimeout(() => reject(new Error("Audio load timed out")), 10000);
-         audio.oncanplay = () => { clearTimeout(timeout); resolve(); };
-         audio.onerror = (e) => {
-           clearTimeout(timeout);
-           console.error("Audio Error:", e, audio.error);
-           reject(new Error(`Audio load error: ${audio.error ? audio.error.code : 'unknown'}`));
-         };
-      });
-
-      // 3. Setup Context
+      // 2. Decode Audio (Standard Web Audio API)
       ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = ctx.createMediaElementSource(audio);
+      const audioBuffer = await ctx.decodeAudioData(audioBufferData);
+
+      // 3. Setup Processing Graph
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      
       const dest = ctx.createMediaStreamDestination();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       
-      // Effects
+      // Voice Effects
       const voiceConfig = VOICE_TYPES[voiceType.toUpperCase()] || VOICE_TYPES.ROBOT;
-      audio.playbackRate = voiceConfig.speed;
+      source.detune.value = voiceConfig.detune;
+      source.playbackRate.value = voiceConfig.speed;
       
       const gainNode = ctx.createGain();
       gainNode.gain.value = 2.0;
@@ -243,8 +242,6 @@ export default function AnonymousVoiceApp() {
       source.connect(gainNode);
       gainNode.connect(analyser);
       gainNode.connect(dest);
-      // Optional: Connect to speakers
-      // gainNode.connect(ctx.destination);
 
       // 4. Setup Canvas
       const width = 1080;
@@ -270,23 +267,28 @@ export default function AnonymousVoiceApp() {
       mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-      // 6. Record Loop
+      const fps = 30;
+      const duration = audioBuffer.duration / voiceConfig.speed; // Adjust for playback rate
+      
+      // 6. Real-time Record Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
         
         mediaRecorder.start();
-        audio.play().catch(reject);
-        ctx.resume();
+        source.start(0);
 
+        const startTime = ctx.currentTime;
+        
         const draw = () => {
-           if (audio.paused || audio.ended) {
+           const elapsedTime = ctx.currentTime - startTime;
+           
+           if (elapsedTime >= duration) {
               mediaRecorder.stop();
               return;
            }
 
-           // Lip Sync Logic
+           // Audio Analysis
            analyser.getByteFrequencyData(dataArray);
            const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
            
@@ -330,13 +332,13 @@ export default function AnonymousVoiceApp() {
              canvasCtx.font='40px sans-serif';
              canvasCtx.fillStyle='#fff';
              const words = text.split(' ');
-             const p = audio.currentTime/audio.duration;
+             const p = elapsedTime / duration;
              const i = Math.floor(p*words.length);
              const sub = words.slice(Math.max(0,i-2), i+3).join(' ');
              canvasCtx.fillText(sub||text.substring(0,25)+'...', width/2, height-300);
            }
 
-           setGenState({ id: msgId, progress: Math.round((audio.currentTime/audio.duration)*100), status: 'Recording...' });
+           setGenState({ id: msgId, progress: Math.round((elapsedTime/duration)*100), status: 'Recording...' });
            requestAnimationFrame(draw);
         };
         draw();
@@ -358,7 +360,6 @@ export default function AnonymousVoiceApp() {
        console.error(err);
        setStatus({ ...status, error: 'Video failed: ' + err.message });
     } finally {
-       if (localAudioUrl) URL.revokeObjectURL(localAudioUrl);
        if (ctx) ctx.close();
        setGenState({ id: null, progress: 0, status: '' });
     }
