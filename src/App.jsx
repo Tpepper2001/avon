@@ -528,7 +528,7 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-      // Update the database
+    // Update the database
       const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -536,19 +536,30 @@ export default function AnonymousVoiceApp() {
 
       if (dbError) throw new Error('Database save failed: ' + dbError.message);
       
-      // --- CRITICAL FIX START ---
-      // We removed the optimistic local update here to avoid race conditions.
-      // Instead, we wait for the DB to confirm, then fetch fresh data.
+      // Wait a moment for DB to fully commit
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Optimistically update local state immediately
+      setMessages(prevMessages => 
+        prevMessages.map(m => 
+          m.id === messageId ? { ...m, video_url: publicUrl } : m
+        )
+      );
+      
+      // Also fetch fresh data from DB to ensure sync
       if (currentUser) {
         console.log('[DEBUG] 🔄 Refreshing messages from DB to confirm video...');
         await fetchMessages(currentUser.username);
       }
-      // --- CRITICAL FIX END ---
 
       setVideoProgress('');
       setGeneratingVideo(null);
       setActiveTab('videos'); 
-      alert('Video generated! Check the "My Videos" tab.');
+      
+      // Use setTimeout to show alert after tab switch completes
+      setTimeout(() => {
+        alert('✅ Video generated successfully! It should now appear in the My Videos tab.');
+      }, 300);
       
     } catch (error) {
       console.error('Video generation error:', error);
