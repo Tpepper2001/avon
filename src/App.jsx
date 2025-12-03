@@ -338,7 +338,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  const generateAvatarVideo = async (text, messageId) => {
+ const generateAvatarVideo = async (text, messageId) => {
     setGeneratingVideo(messageId);
     setVideoProgress('Starting...');
     
@@ -365,7 +365,7 @@ export default function AnonymousVoiceApp() {
       
       recorder.ondataavailable = e => chunks.push(e.data);
       
-      const videoBlob = await new Promise(resolve => {
+      const videoBlob = await new Promise((resolve) => {
         recorder.onstop = () => {
           console.log('Recording stopped, chunks:', chunks.length);
           resolve(new Blob(chunks, { type: 'video/webm' }));
@@ -490,6 +490,56 @@ export default function AnonymousVoiceApp() {
       
       console.log('Video blob created, size:', videoBlob.size);
       setVideoProgress('Uploading...');
+      
+      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+      console.log('Uploading to storage:', fileName);
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('voices')
+        .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
+      
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        throw uploadError;
+      }
+      
+      console.log('Upload successful:', uploadData);
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('voices')
+        .getPublicUrl(fileName);
+      
+      console.log('Public URL:', publicUrl);
+      
+      // Update the database
+      const { data: updateData, error: dbError } = await supabase
+        .from('messages')
+        .update({ video_url: publicUrl })
+        .eq('id', messageId)
+        .select();
+
+      if (dbError) {
+        console.error('Database update error:', dbError);
+        throw new Error('Database save failed: ' + dbError.message);
+      }
+      
+      console.log('Database updated:', updateData);
+      
+      // Force refresh messages from database
+      console.log('Fetching fresh messages...');
+      await fetchMessages(currentUser.username);
+      
+      setVideoProgress('');
+      setGeneratingVideo(null);
+      alert('✅ Video generated successfully! Check the "My Videos" tab.');
+      
+    } catch (error) {
+      console.error('Video generation error:', error);
+      alert('Failed to generate video: ' + error.message);
+      setGeneratingVideo(null);
+      setVideoProgress('');
+    }
+  };
       
       const fileName = `avatar-${messageId}-${Date.now()}.webm`;
       console.log('Uploading to storage:', fileName);
