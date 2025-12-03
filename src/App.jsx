@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
   Square, Trash2, Film, Download, Heart, Zap, Ghost, Instagram, 
-  AlertCircle, Loader2, X, MessageCircle 
+  AlertCircle, Loader2, X, MessageCircle, Music2 
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -13,7 +13,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_RECORDING_TIME = 120; // 2 minutes
-const REFRESH_INTERVAL = 8000; // Poll every 8 seconds
+const REFRESH_INTERVAL = 10000;
 
 const AUDIO_CONSTRAINTS = {
   audio: {
@@ -79,11 +79,7 @@ export default function AnonymousVoiceApp() {
 
   useEffect(() => {
     if (!user || view !== 'inbox') return;
-    // Polling interval
-    const interval = setInterval(() => { 
-        if (!genState.id) fetchMessages(user.username); 
-    }, REFRESH_INTERVAL);
-    
+    const interval = setInterval(() => { if (!genState.id) fetchMessages(user.username); }, REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, [user, view, genState.id]);
 
@@ -103,7 +99,23 @@ export default function AnonymousVoiceApp() {
     if (recognitionRef.current) recognitionRef.current.stop();
   };
 
-  // --- SMART FETCH (FIX FOR VIDEO DISAPPEARING) ---
+  const handleDownload = async (url, filename) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      alert("Download failed. Please try again.");
+    }
+  };
+
   const fetchMessages = useCallback(async (username) => {
     try {
       const { data, error } = await supabase
@@ -114,21 +126,21 @@ export default function AnonymousVoiceApp() {
 
       if (error) throw error;
       
+      // Filter logic: Optional 24hr expiry (If you want to hide old ones)
+      // const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      // const freshMessages = data.filter(m => new Date(m.created_at) > oneDayAgo);
+
       if (data) {
-        setMessages(prevMessages => {
-          // Merge Logic: Don't overwrite a local video_url with null from DB 
-          // (Handles lag between DB update and next fetch)
+        setMessages(prev => {
+          // Smart Merge to stop flickering
           const merged = data.map(remoteMsg => {
-            const localMsg = prevMessages.find(p => p.id === remoteMsg.id);
-            // If we have a local video URL but remote is null, keep local
+            const localMsg = prev.find(p => p.id === remoteMsg.id);
             if (localMsg?.video_url && !remoteMsg.video_url) {
                 return { ...remoteMsg, video_url: localMsg.video_url };
             }
             return remoteMsg;
           });
-
-          // Only update state if something actually changed
-          if (JSON.stringify(prevMessages) === JSON.stringify(merged)) return prevMessages;
+          if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
           return merged;
         });
       }
@@ -164,7 +176,7 @@ export default function AnonymousVoiceApp() {
 
   const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); setMessages([]); };
 
-  // --- RECORDING LOGIC ---
+  // --- RECORDING ---
   const startRecording = async () => {
     setStatus({ ...status, error: null });
     try {
@@ -298,7 +310,6 @@ export default function AnonymousVoiceApp() {
       mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const fps = 30;
       const duration = audioBuffer.duration / voiceConfig.speed;
       
       // 6. Record Loop
@@ -311,7 +322,7 @@ export default function AnonymousVoiceApp() {
         const startTime = ctx.currentTime;
         const draw = () => {
            const elapsedTime = ctx.currentTime - startTime;
-           if (elapsedTime >= duration + 0.5) { // Add 0.5s buffer
+           if (elapsedTime >= duration + 0.5) { 
               mediaRecorder.stop();
               return;
            }
@@ -376,16 +387,19 @@ export default function AnonymousVoiceApp() {
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
       
-      // Critical DB Update
-      const { error: dbErr } = await supabase.from('messages').update({ video_url: publicUrl }).eq('id', msgId);
+      // CRITICAL FIX: Ensure the update actually happened by selecting the returned row
+      const { data: updatedData, error: dbErr } = await supabase
+        .from('messages')
+        .update({ video_url: publicUrl })
+        .eq('id', msgId)
+        .select();
       
-      if (dbErr) {
+      if (dbErr || !updatedData || updatedData.length === 0) {
         console.error("DB Update Failed", dbErr);
-        // Fallback: If DB update fails due to permissions, keep it in local state at least
-        alert("Video created but could not save to database (Check RLS Policies). It will disappear on refresh.");
+        // Alert the user if the permission check fails
+        alert("Video generated! But we couldn't save it to your history. Please check your Database Permissions (Row Level Security).");
       }
       
-      // Optimistic Update
       setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
       setActiveTab('videos');
 
@@ -503,7 +517,27 @@ export default function AnonymousVoiceApp() {
                        <div><p className="font-bold text-sm">Anonymous</p><p className="text-xs text-gray-400">{new Date(msg.created_at).toLocaleDateString()}</p></div>
                     </div>
                     {msg.video_url ? (
-                       <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
+                       <div className="flex flex-col gap-4">
+                           <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
+                           
+                           {/* SHARE & DOWNLOAD ACTIONS */}
+                           <div className="grid grid-cols-2 gap-2">
+                             <button onClick={() => handleDownload(msg.video_url, `anonvox-${msg.id}.webm`)} className="bg-gray-100 text-gray-800 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-200">
+                               <Download className="w-3 h-3"/> Download
+                             </button>
+                             <button onClick={() => {
+                                handleDownload(msg.video_url, `tiktok-anonvox-${msg.id}.webm`);
+                                alert("Video saved! Open TikTok and upload the file.");
+                             }} className="bg-black text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-800">
+                               <Music2 className="w-3 h-3"/> TikTok
+                             </button>
+                             <button onClick={() => {
+                                window.open(`https://wa.me/?text=${encodeURIComponent("Check out this voice message I got! 🤖 " + msg.video_url)}`, '_blank');
+                             }} className="col-span-2 bg-green-500 text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-green-600">
+                               <MessageCircle className="w-3 h-3"/> Share on WhatsApp
+                             </button>
+                           </div>
+                       </div>
                     ) : (
                        <div className="bg-gray-50 p-4 rounded-xl">
                           <p className="text-gray-600 italic text-sm mb-4">"{msg.text || 'Voice Message'}"</p>
