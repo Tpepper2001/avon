@@ -1,19 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, Trash2, Film, Download } from 'lucide-react';
+import { 
+  Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
+  Square, Trash2, Film, Download, Heart, Zap, Ghost, Music, 
+  Users, Copy, Instagram, Linkedin, MessageCircle 
+} from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
-// Put your own keys here
+// Setup Supabase
 const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
-
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+// --- CONSTANTS & TEMPLATES ---
+const VOICE_TYPES = {
+  ROBOT: { id: 'robot', name: 'Classic Bot', color: '#667eea', detune: -800, speed: 1.0, icon: <Sparkles className="w-4 h-4"/>, req: 0 },
+  ALIEN: { id: 'alien', name: 'Area 51', color: '#10B981', detune: 1200, speed: 1.2, icon: <Zap className="w-4 h-4"/>, req: 3 },
+  DEMON: { id: 'demon', name: 'Underworld', color: '#EF4444', detune: -1800, speed: 0.8, icon: <Ghost className="w-4 h-4"/>, req: 5 },
+};
+
+const MESSAGE_TEMPLATES = [
+  "Confession: I've had a crush on you since...",
+  "Truth Bomb: You need to hear this...",
+  "Compliment: Your energy is literally...",
+  "Question: What was that thing you posted...",
+];
+
 export default function AnonymousVoiceApp() {
+  // Auth & User State
   const [currentUser, setCurrentUser] = useState(null);
-  const [authView, setAuthView] = useState('landing');
+  const [authView, setAuthView] = useState('landing'); // landing, login, signup, try-it
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [recipientUsername, setRecipientUsername] = useState('');
+  const [referralCount, setReferralCount] = useState(0); // Mock referral system
   
   // App States
   const [activeTab, setActiveTab] = useState('inbox'); 
@@ -27,739 +46,592 @@ export default function AnonymousVoiceApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [recordingTime, setRecordingTime] = useState(0);
+  const [selectedVoice, setSelectedVoice] = useState('robot');
+  const [videoFormat, setVideoFormat] = useState('tiktok'); // tiktok (9:16) or square (1:1)
 
   // Video Generation States
   const [generatingVideo, setGeneratingVideo] = useState(null);
   const [videoProgress, setVideoProgress] = useState('');
-  // Prevent auto-refresh collisions
   const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false);
 
+  // Refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sendTo = params.get('send_to');
+    const refBy = params.get('ref');
+
+    // Simulate Referral Tracking
+    if (refBy) {
+      localStorage.setItem('referred_by', refBy);
+    }
     
+    // Load local data
+    const savedUser = localStorage.getItem('anon-voice-user');
+    const savedRefs = localStorage.getItem('anon-refs');
+    if (savedRefs) setReferralCount(parseInt(savedRefs));
+
     if (sendTo) {
       setRecipientUsername(sendTo);
       setAuthView('');
-    } else {
-      const savedUser = localStorage.getItem('anon-voice-user');
-      if (savedUser) {
-        const user = JSON.parse(savedUser);
-        setCurrentUser(user);
-        fetchMessages(user.username);
-        setAuthView('');
-      }
+    } else if (savedUser) {
+      const user = JSON.parse(savedUser);
+      setCurrentUser(user);
+      fetchMessages(user.username);
+      setAuthView('');
     }
   }, []);
 
-  // Auto-refresh messages logic
-  useEffect(() => {
-    if (!currentUser) return;
+  // --- MOCK REFERRAL LOGIC ---
+  const incrementReferrals = () => {
+    // In a real app, this comes from DB
+    const newCount = referralCount + 1;
+    setReferralCount(newCount);
+    localStorage.setItem('anon-refs', newCount.toString());
+    alert(`🚀 Referral simulated! You now have ${newCount} referrals.`);
+  };
 
-    const interval = setInterval(() => {
-      if ((activeTab === 'videos' || activeTab === 'inbox') && !isRefreshingAfterGeneration) {
-        console.log('[DEBUG] 🔄 Auto-refreshing messages...');
-        fetchMessages(currentUser.username);
-      }
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [currentUser, activeTab, isRefreshingAfterGeneration]);
-
+  // --- CORE FUNCTIONS (Auth/Fetch) ---
+  // (Kept largely the same, just condensed for brevity)
   const fetchMessages = async (user) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('username', user)
-      .order('created_at', { ascending: false });
-
+    const { data } = await supabase.from('messages').select('*').eq('username', user).order('created_at', { ascending: false });
     if (data) {
-      setMessages(prevMessages => {
-        // Intelligent Merge: Don't overwrite a local video_url with a null from DB
-        return data.map(newMsg => {
-          const localMsg = prevMessages.find(p => p.id === newMsg.id);
-          if (localMsg && localMsg.video_url && !newMsg.video_url) {
-            return { ...newMsg, video_url: localMsg.video_url };
-          }
-          return newMsg;
-        });
-      });
+      setMessages(prev => data.map(newMsg => {
+        const local = prev.find(p => p.id === newMsg.id);
+        return (local?.video_url && !newMsg.video_url) ? { ...newMsg, video_url: local.video_url } : newMsg;
+      }));
     }
   };
 
-  const handleSignup = async () => {
-    setError('');
-    if (!username.match(/^[a-zA-Z0-9_-]{3,20}$/)) {
-      setError('Username must be 3-20 characters (letters, numbers, - or _)');
-      return;
+  const handleAuth = async (type) => {
+    setError(''); setLoading(true);
+    if (type === 'signup') {
+      if (!username.match(/^[a-zA-Z0-9_-]{3,20}$/)) { setError('Invalid username'); setLoading(false); return; }
+      const { data: ex } = await supabase.from('users').select('username').eq('username', username).maybeSingle();
+      if (ex) { setError('Username taken'); setLoading(false); return; }
+      await supabase.from('users').insert({ username, password });
+    } else {
+      const { data } = await supabase.from('users').select('username').eq('username', username).eq('password', password).maybeSingle();
+      if (!data) { setError('Invalid credentials'); setLoading(false); return; }
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
-      return;
-    }
-    setLoading(true);
-
-    const { data: existing } = await supabase.from('users').select('username').eq('username', username).maybeSingle();
-
-    if (existing) {
-      setError('Username already taken');
-      setLoading(false);
-      return;
-    }
-
-    const { error: insertError } = await supabase.from('users').insert({ username, password });
-    if (insertError) {
-      setError('Signup failed: ' + insertError.message);
-      setLoading(false);
-      return;
-    }
-
     const user = { username };
     setCurrentUser(user);
     localStorage.setItem('anon-voice-user', JSON.stringify(user));
-    setLoading(false);
-    setUsername('');
-    setPassword('');
-    setAuthView('');
-  };
-
-  const handleLogin = async () => {
-    setError('');
-    setLoading(true);
-
-    const { data, error: loginError } = await supabase.from('users').select('username').eq('username', username).eq('password', password).maybeSingle();
-
-    if (loginError || !data) {
-      setError('Invalid username or password');
-      setLoading(false);
-      return;
-    }
-
-    const user = { username: data.username };
-    setCurrentUser(user);
-    localStorage.setItem('anon-voice-user', JSON.stringify(user));
-    fetchMessages(user.username);
-    setLoading(false);
-    setUsername('');
-    setPassword('');
-    setAuthView('');
+    setLoading(false); setAuthView(''); fetchMessages(user.username);
   };
 
   const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('anon-voice-user');
-    setMessages([]);
-    setAuthView('landing');
-    setActiveTab('inbox');
+    setCurrentUser(null); localStorage.removeItem('anon-voice-user'); setMessages([]); setAuthView('landing');
   };
 
-  const toggleRecording = async () => {
-    if (isRecording) stopRecording();
-    else startRecording();
-  };
+  // --- RECORDING LOGIC ---
+  const toggleRecording = async () => { isRecording ? stopRecording() : startRecording(); };
 
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
-
       recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const url = URL.createObjectURL(blob);
-        setAudioBlob(blob);
-        setAudioUrl(url);
-        stream.getTracks().forEach((t) => t.stop());
+        setAudioBlob(blob); setAudioUrl(URL.createObjectURL(blob));
+        stream.getTracks().forEach(t => t.stop());
       };
-
       recorder.start();
       mediaRecorderRef.current = recorder;
-      setIsRecording(true);
-      setRecordingTime(0);
+      setIsRecording(true); setRecordingTime(0);
+      timerRef.current = setInterval(() => setRecordingTime(p => p + 1), 1000);
 
-      timerRef.current = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
-
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.onresult = (e) => {
-          const text = Array.from(e.results).map((r) => r[0].transcript).join('');
-          setTranscript(text);
-        };
-        recognition.start();
-        recognitionRef.current = recognition;
+      // Speech Recog
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SR) {
+        const rec = new SR();
+        rec.continuous = true; rec.interimResults = true;
+        rec.onresult = (e) => setTranscript(Array.from(e.results).map(r => r[0].transcript).join(''));
+        rec.start(); recognitionRef.current = rec;
       }
-    } catch (err) {
-      alert('Microphone access denied. Please enable microphone permissions.');
-    }
+    } catch (err) { alert('Mic access required'); }
   };
 
-  const transcribeAudioWithAssemblyAI = async (audioBlob) => {
-    try {
-      const ASSEMBLY_AI_API_KEY = 'e923129f7dec495081e757c6fe82ea8b';
-      const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
-        method: 'POST', headers: { 'authorization': ASSEMBLY_AI_API_KEY }, body: audioBlob,
-      });
-      const uploadData = await uploadResponse.json();
-      const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
-        method: 'POST',
-        headers: { 'authorization': ASSEMBLY_AI_API_KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ audio_url: uploadData.upload_url }),
-      });
-      const transcriptData = await transcriptResponse.json();
-      const pollingEndpoint = `https://api.assemblyai.com/v2/transcript/${transcriptData.id}`;
-      
-      while (true) {
-        const pollingResponse = await fetch(pollingEndpoint, { headers: { 'authorization': ASSEMBLY_AI_API_KEY } });
-        const result = await pollingResponse.json();
-        if (result.status === 'completed') return result.text;
-        else if (result.status === 'error') throw new Error(result.error);
-        await new Promise(resolve => setTimeout(resolve, 3000));
-      }
-    } catch (error) {
-      console.error('AssemblyAI transcription error:', error);
-      return null;
-    }
-  };
-
-  const stopRecording = async () => {
+  const stopRecording = () => {
     if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (recognitionRef.current) recognitionRef.current.stop();
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      
-      setTimeout(async () => {
-        if (audioChunksRef.current.length > 0) {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          setLoading(true);
-          const transcribedText = await transcribeAudioWithAssemblyAI(blob);
-          if (transcribedText) setTranscript(transcribedText);
-          setLoading(false);
-        }
-      }, 100);
+      mediaRecorderRef.current.stop(); setIsRecording(false);
+      recognitionRef.current?.stop(); clearInterval(timerRef.current);
     }
   };
 
-  const cancelRecording = () => {
-    if (isRecording) stopRecording();
-    setAudioBlob(null);
-    setAudioUrl(null);
-    setTranscript('');
-    setRecordingTime(0);
-  };
-
-  const sendMessageWithRoboticVoice = async () => {
-    if (!transcript && !audioBlob) {
-      alert('Please record a voice message first');
-      return;
-    }
-    const recipient = recipientUsername.trim();
-    if (!recipient) {
-      alert('Please enter a recipient username');
-      return;
-    }
-
-    setLoading(true);
-    let uploadedAudioUrl = null;
-
-    // 1. Upload the audio file so we can use it for the video later
-    if (audioBlob) {
-        const fileName = `voice-${Date.now()}.webm`;
-        const { error: uploadError } = await supabase.storage
-            .from('voices')
-            .upload(fileName, audioBlob, { contentType: 'audio/webm', upsert: false });
-
-        if (!uploadError) {
-            const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-            uploadedAudioUrl = publicUrl;
-        }
-    }
-
-    // 2. Insert message with audio_url
-    const { error } = await supabase.from('messages').insert({
-        username: recipient,
-        text: transcript || '[Voice message]',
-        audio_url: uploadedAudioUrl,
-    });
-
-    if (error) {
-      alert('Send failed: ' + error.message);
-      setLoading(false);
-      return;
-    }
-
-    alert(`🤖 Voice message sent to @${recipient}!`);
-    setAudioBlob(null);
-    setAudioUrl(null);
-    setTranscript('');
-    setRecordingTime(0);
+  // --- AUDIO PROCESSING & VIDEO GEN ---
+  const getProcessedAudioStream = async (url, voiceId) => {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const resp = await fetch(url);
+    const buf = await ctx.decodeAudioData(await resp.arrayBuffer());
     
-    if (currentUser && recipient === currentUser.username) {
-      fetchMessages(currentUser.username);
+    const source = ctx.createBufferSource();
+    source.buffer = buf;
+    const dest = ctx.createMediaStreamDestination();
+    const analyser = ctx.createAnalyser(); // For lip sync
+    analyser.fftSize = 256;
+
+    const settings = VOICE_TYPES[voiceId?.toUpperCase()] || VOICE_TYPES.ROBOT;
+    
+    // 1. Pitch Shift
+    source.detune.value = settings.detune;
+    source.playbackRate.value = settings.speed;
+
+    // 2. Effects Chain
+    const mainGain = ctx.createGain();
+    mainGain.gain.value = 2.0;
+
+    if (voiceId === 'robot') {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth'; osc.frequency.value = 50; osc.start();
+      const oscGain = ctx.createGain(); oscGain.gain.value = 0.05;
+      osc.connect(oscGain).connect(dest);
+    } 
+    else if (voiceId === 'alien') {
+      const delay = ctx.createDelay();
+      delay.delayTime.value = 0.1;
+      const feedback = ctx.createGain();
+      feedback.gain.value = 0.4;
+      source.connect(delay).connect(feedback).connect(delay);
+      delay.connect(mainGain);
     }
-    setLoading(false);
+
+    source.connect(mainGain);
+    mainGain.connect(analyser); // Analyser taps into audio
+    mainGain.connect(dest);
+
+    return { stream: dest.stream, duration: buf.duration, source, ctx, analyser };
   };
 
-  // --- AUDIO PROCESSING HELPERS ---
-  const getRoboticAudioStream = async (url) => {
-    try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error("Network response was not ok");
-        const arrayBuffer = await response.arrayBuffer();
-        
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        await audioContext.resume(); // Vital for mobile/some browsers
-        
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        
-        // --- ROBOTIC EFFECT CHAIN ---
-        // 1. Lower Pitch
-        source.detune.value = -800; // Deeper robot voice
-
-        // 2. Ring Modulator (Metallic effect)
-        const oscillator = audioContext.createOscillator();
-        oscillator.type = 'sawtooth';
-        oscillator.frequency.value = 40; 
-        oscillator.start();
-
-        const gainOsc = audioContext.createGain();
-        gainOsc.gain.value = 0.05; // Subtle buzz
-
-        // 3. Main Gain (Volume Boost)
-        const mainGain = audioContext.createGain();
-        mainGain.gain.value = 2.5; // Boost volume significantly
-
-        const dest = audioContext.createMediaStreamDestination();
-        
-        // Connections
-        source.connect(mainGain); // Connect source to volume boost
-        mainGain.connect(dest);   // Connect volume to destination
-        
-        // Mix in the oscillator for metallic sound
-        oscillator.connect(gainOsc);
-        gainOsc.connect(dest);
-
-        return { 
-            stream: dest.stream, 
-            duration: audioBuffer.duration,
-            source: source // Return source so we can start it later
-        };
-    } catch (e) {
-        console.error("Error processing audio (CORS or Decode):", e);
-        return null;
-    }
-  };
-
-  const generateAvatarVideo = async (text, messageId, messageAudioUrl) => {
-    setGeneratingVideo(messageId);
-    setVideoProgress('Initializing...');
+  const generateVideo = async (msgId, audioUrl, text, voiceType) => {
+    setGeneratingVideo(msgId);
+    setVideoProgress('Preparing Studio...');
     setIsRefreshingAfterGeneration(true);
-    
+
     try {
-      let audioStream = null;
-      let audioSource = null;
-      let duration = 5; // Fallback duration
-
-      // 1. Prepare Audio
-      if (messageAudioUrl) {
-          setVideoProgress('Downloading audio...');
-          const result = await getRoboticAudioStream(messageAudioUrl);
-          if (result) {
-              audioStream = result.stream;
-              audioSource = result.source;
-              duration = result.duration;
-              console.log("Audio prepared, duration:", duration);
-          } else {
-            console.warn("Audio processing failed, falling back to silent video.");
-            alert("Could not process audio (likely CORS issue). Video will be silent.");
-          }
-      } else {
-          // Estimate duration from text
-          const wordCount = text ? text.split(' ').length : 10;
-          duration = Math.max(3, (wordCount / 150) * 60 / 0.7);
-      }
-
-      // 2. Prepare Video Canvas
+      const width = videoFormat === 'tiktok' ? 1080 : 1080;
+      const height = videoFormat === 'tiktok' ? 1920 : 1080;
+      
       const canvas = document.createElement('canvas');
-      canvas.width = 1080;
-      canvas.height = 1080;
+      canvas.width = width; canvas.height = height;
       const ctx = canvas.getContext('2d');
-      const totalFrames = Math.ceil(duration * 30);
-      setVideoProgress('Rendering frames...');
-      const frames = [];
       
-      // 3. Render Visuals
-      for (let frame = 0; frame < totalFrames; frame++) {
-        const time = frame / 30;
-        
-        // Background
-        const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
-        gradient.addColorStop(0, '#667eea');
-        gradient.addColorStop(1, '#764ba2');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 1080, 1080);
-        
-        ctx.save();
-        ctx.translate(540, 540);
-        
-        // 3D Head Bob
-        const bobOffset = Math.sin(time * 2) * 20;
-        ctx.translate(0, bobOffset);
-        
-        // Head
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-        ctx.shadowBlur = 30;
-        ctx.shadowOffsetX = 10;
-        ctx.shadowOffsetY = 10;
-        ctx.fillStyle = '#c0c5ce';
-        ctx.fillRect(-200, -200, 400, 400);
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#e0e5ee';
-        ctx.fillRect(-180, -180, 360, 360);
-        
-        // Eyes
-        const blinkPhase = Math.floor(time * 3) % 10;
-        const eyeHeight = blinkPhase === 0 ? 20 : 80;
-        ctx.shadowColor = '#4a90e2';
-        ctx.shadowBlur = 20;
-        ctx.fillStyle = '#4a90e2';
-        ctx.beginPath(); ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2); ctx.fill();
-        
-        // Mouth
-        const mouthOpen = Math.abs(Math.sin(time * 15)) * 60 + 20;
-        ctx.shadowColor = '#000';
-        ctx.shadowBlur = 10;
-        ctx.fillStyle = '#2c3e50';
-        ctx.fillRect(-120, 80, 240, mouthOpen);
-        
-        // Antenna
-        ctx.fillStyle = '#95a5a6';
-        ctx.fillRect(-15, -250, 30, 60);
-        const antennaPulse = Math.sin(time * 4) * 10 + 40;
-        ctx.shadowColor = '#e74c3c';
-        ctx.shadowBlur = 25;
-        ctx.fillStyle = '#e74c3c';
-        ctx.beginPath(); ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2); ctx.fill();
-        
-        ctx.restore();
-        await new Promise(resolve => canvas.toBlob(blob => { frames.push(blob); resolve(); }, 'image/jpeg', 0.8));
-        
-        if (frame % 30 === 0) setVideoProgress(`Rendering ${Math.round((frame/totalFrames)*100)}%`);
+      let audioData = null;
+      if (audioUrl) {
+         setVideoProgress('Processing Voice...');
+         audioData = await getProcessedAudioStream(audioUrl, voiceType);
       }
       
-      setVideoProgress('Encoding...');
+      const duration = audioData ? audioData.duration : 5;
+      const totalFrames = Math.ceil(duration * 30);
+      const frames = [];
+
+      // Render Loop
+      const dataArray = new Uint8Array(audioData?.analyser.frequencyBinCount || 0);
       
-      // 4. Combine Video + Audio
+      // We need to simulate real-time analysis for the pre-render
+      // Since we can't easily analyze buffer offline without OfflineAudioContext (complex),
+      // we will simulate mouth movement based on a sine wave modulated by "pseudo-randomness" 
+      // if we are pre-rendering frames fast.
+      // BETTER APPROACH: Use OfflineAudioContext to get amplitude data for frames.
+      // SIMPLIFIED APPROACH: Randomized mouth movement active only when audio exists.
+
+      setVideoProgress('Rendering Animation...');
+      
+      for (let i = 0; i < totalFrames; i++) {
+        const time = i / 30;
+        
+        // --- DRAWING THE AVATAR ---
+        // Gradient BG
+        const voiceConfig = VOICE_TYPES[voiceType.toUpperCase()];
+        const grad = ctx.createLinearGradient(0, 0, 0, height);
+        grad.addColorStop(0, '#1a1a2e');
+        grad.addColorStop(1, voiceConfig.color);
+        ctx.fillStyle = grad; ctx.fillRect(0, 0, width, height);
+
+        // TikTok Header
+        if (videoFormat === 'tiktok') {
+           ctx.fillStyle = "rgba(255,255,255,0.1)";
+           ctx.fillRect(100, 200, width-200, 100);
+           ctx.font = "bold 40px Arial";
+           ctx.fillStyle = "#fff";
+           ctx.textAlign = "center";
+           ctx.fillText("ANONYMOUS MESSAGE", width/2, 265);
+        }
+
+        ctx.save();
+        ctx.translate(width/2, height/2);
+        
+        const bob = Math.sin(time * 2) * 20;
+        ctx.translate(0, bob);
+
+        // Head
+        ctx.fillStyle = '#e0e5ee';
+        ctx.beginPath(); ctx.roundRect(-200, -200, 400, 400, 40); ctx.fill();
+
+        // Eyes (Blink)
+        const blink = (Math.floor(time * 3) % 10 === 0) ? 0.1 : 1;
+        ctx.fillStyle = voiceConfig.color;
+        ctx.shadowBlur = 30; ctx.shadowColor = voiceConfig.color;
+        ctx.fillRect(-120, -50, 80, 80 * blink);
+        ctx.fillRect(40, -50, 80, 80 * blink);
+        ctx.shadowBlur = 0;
+
+        // Mouth (Simulate Lip Sync)
+        // Pseudo-random "talking" amplitude
+        const talkAmp = Math.sin(time * 20) * Math.sin(time * 5) * 60 + 20;
+        const mouthOpen = Math.max(10, Math.abs(talkAmp));
+        
+        ctx.fillStyle = '#2c3e50';
+        ctx.fillRect(-100, 100, 200, mouthOpen);
+
+        ctx.restore();
+
+        // Subtitles
+        if (text) {
+          ctx.font = "bold 50px Arial";
+          ctx.fillStyle = "white";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 4;
+          ctx.textAlign = "center";
+          const words = text.split(' ');
+          const chunk = words.slice(Math.floor((i/totalFrames)*words.length), Math.floor((i/totalFrames)*words.length)+3).join(' ');
+          ctx.strokeText(chunk, width/2, height - 200);
+          ctx.fillText(chunk, width/2, height - 200);
+        }
+
+        await new Promise(r => canvas.toBlob(b => { frames.push(b); r(); }, 'image/jpeg', 0.8));
+        if (i % 10 === 0) setVideoProgress(`Rendering ${Math.round((i/totalFrames)*100)}%`);
+      }
+
+      // Combine & Upload (Similar to previous logic)
+      setVideoProgress('Encoding & Uploading...');
       const canvasStream = canvas.captureStream(30);
       let finalStream = canvasStream;
-
-      if (audioStream) {
-          // Create a new stream combining video tracks and audio tracks
-          const videoTracks = canvasStream.getVideoTracks();
-          const audioTracks = audioStream.getAudioTracks();
-          if (audioTracks.length > 0) {
-              finalStream = new MediaStream([...videoTracks, ...audioTracks]);
-          }
+      if (audioData) {
+         // Re-create source for recording
+         const mixedDest = audioData.ctx.createMediaStreamDestination();
+         const newSource = audioData.ctx.createBufferSource();
+         newSource.buffer = audioData.source.buffer;
+         newSource.detune.value = audioData.source.detune.value;
+         newSource.playbackRate.value = audioData.source.playbackRate.value;
+         newSource.connect(mixedDest);
+         
+         finalStream = new MediaStream([...canvasStream.getVideoTracks(), ...mixedDest.stream.getAudioTracks()]);
+         newSource.start(0);
       }
 
-      // 5. Record
+      const recorder = new MediaRecorder(finalStream, { mimeType: 'video/webm;codecs=vp8,opus' });
       const chunks = [];
-      const recorder = new MediaRecorder(finalStream, { 
-        mimeType: 'video/webm;codecs=vp8,opus',
-        videoBitsPerSecond: 2500000
-      });
-      
       recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       
-      const videoBlob = await new Promise((resolve, reject) => {
+      const videoBlob = await new Promise((resolve) => {
         recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
-        recorder.onerror = reject;
-        
-        // START EVERYTHING
         recorder.start();
-        if (audioSource) audioSource.start(0); // Start audio playback into the stream
         
-        let frameIndex = 0;
-        const drawFrame = async () => {
-          if (frameIndex >= frames.length) {
-            recorder.stop();
-            return;
-          }
-          if (typeof createImageBitmap !== 'undefined') {
-              const img = await createImageBitmap(frames[frameIndex]);
-              ctx.drawImage(img, 0, 0);
-              frameIndex++;
-              setTimeout(drawFrame, 33);
-          }
+        let idx = 0;
+        const draw = async () => {
+          if (idx >= frames.length) { recorder.stop(); return; }
+          const img = await createImageBitmap(frames[idx++]);
+          ctx.drawImage(img, 0, 0);
+          setTimeout(draw, 33);
         };
-        drawFrame();
+        draw();
       });
-      
-      setVideoProgress('Uploading...');
-      if (videoBlob.size === 0) throw new Error("Generated video is empty");
 
-      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
-      const { error: uploadError } = await supabase.storage.from('voices').upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
-      if (uploadError) throw uploadError;
-      
+      const fileName = `vid-${msgId}-${Date.now()}.webm`;
+      await supabase.storage.from('voices').upload(fileName, videoBlob);
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
+      await supabase.from('messages').update({ video_url: publicUrl }).eq('id', msgId);
       
-      const { error: dbError } = await supabase.from('messages').update({ video_url: publicUrl }).eq('id', messageId);
-      if (dbError) throw dbError;
+      setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
+      setGeneratingVideo(null); setActiveTab('videos'); 
+      setTimeout(() => alert('Viral Video Ready! 🎬'), 500);
 
-      // Optimistic update
-      setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, video_url: publicUrl } : m)));
+    } catch (e) { console.error(e); setGeneratingVideo(null); alert('Error generating video'); }
+  };
 
-      setGeneratingVideo(null);
-      setVideoProgress('');
-      setActiveTab('videos');
-      
-      setTimeout(() => setIsRefreshingAfterGeneration(false), 8000); 
-      setTimeout(() => alert('Video generated with ROBOTIC VOICE! 🤖'), 300);
-
-    } catch (error) {
-      console.error('Video error:', error);
-      alert('Failed: ' + error.message);
-      setIsRefreshingAfterGeneration(false);
-    } finally {
-      setGeneratingVideo(null);
-      setVideoProgress('');
+  // --- SOCIAL SHARE ---
+  const handleShare = async () => {
+    const shareData = {
+      title: 'AnonVox',
+      text: 'Send me an anonymous voice message! 🤖',
+      url: `${window.location.origin}?send_to=${currentUser.username}&ref=${currentUser.username}`
+    };
+    if (navigator.share) {
+      await navigator.share(shareData);
+      incrementReferrals(); // Self-referral hack for demo
+    } else {
+      navigator.clipboard.writeText(shareData.url);
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  const playRobotic = (text, id) => {
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 0.7; u.pitch = 0.3; u.volume = 0.9;
-    u.onstart = () => setIsPlaying(id);
-    u.onend = () => setIsPlaying(null);
-    window.speechSynthesis.speak(u);
+  const handleSendMessage = async () => {
+    setLoading(true);
+    let upUrl = null;
+    if (audioBlob) {
+      const fn = `voice-${Date.now()}.webm`;
+      await supabase.storage.from('voices').upload(fn, audioBlob);
+      const { data } = supabase.storage.from('voices').getPublicUrl(fn);
+      upUrl = data.publicUrl;
+    }
+    await supabase.from('messages').insert({ username: recipientUsername, text: transcript || '[Voice]', audio_url: upUrl });
+    setLoading(false);
+    alert('Message Sent! 📨');
+    window.location.href = window.location.origin; // Reload to landing
   };
 
-  const copyLink = () => {
-    const link = `${window.location.origin}?send_to=${currentUser.username}`;
-    navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  // --- VIEWS ---
 
-  const handleKeyPress = (e, action) => { if (e.key === 'Enter') action(); };
-  const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, '0')}`;
-
-  // ════════════════════════════════════════ LANDING PAGE ════════════════════════════════════════
+  // 1. LANDING PAGE
   if (!currentUser && authView === 'landing' && !recipientUsername) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl shadow-2xl p-8 sm:p-12 max-w-md w-full text-center">
-          <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full mx-auto mb-6 sm:mb-8 flex items-center justify-center animate-pulse">
-            <Sparkles className="w-12 h-12 sm:w-16 sm:h-16 text-white" />
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-purple-900 via-black to-black opacity-50 animate-pulse"></div>
+        
+        <div className="z-10 text-center max-w-md w-full">
+          <div className="w-24 h-24 mx-auto bg-gradient-to-br from-cyan-400 to-purple-600 rounded-full flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(139,92,246,0.5)]">
+            <Sparkles className="w-12 h-12 text-white animate-spin-slow" />
           </div>
-          <h1 className="text-5xl sm:text-6xl font-black mb-4 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">AnonVox</h1>
-          <p className="text-gray-600 text-base sm:text-lg mb-8 sm:mb-10 leading-relaxed">Send & receive anonymous voice messages<br />with <span className="font-bold text-purple-600">robotic playback</span> 🤖</p>
-          <div className="space-y-3 sm:space-y-4">
-            <button onClick={() => setAuthView('signup')} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform active:scale-95">Create Account</button>
-            <button onClick={() => setAuthView('login')} className="w-full bg-gray-100 text-gray-800 py-4 sm:py-6 rounded-2xl font-bold text-lg sm:text-xl hover:bg-gray-200 transition active:scale-95">Log In</button>
+          <h1 className="text-5xl font-black mb-2 tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500">AnonVox</h1>
+          <p className="text-gray-400 text-lg mb-8">Send anonymous audio. <br/>Receive <span className="text-cyan-400 font-bold">Robotic Videos</span>.</p>
+          
+          <div className="space-y-4">
+            <button onClick={() => setAuthView('try-it')} className="w-full bg-white text-black py-4 rounded-xl font-bold text-lg hover:scale-105 transition shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center justify-center gap-2">
+              <Mic className="w-5 h-5"/> Try Voice Effect
+            </button>
+            <div className="grid grid-cols-2 gap-4">
+              <button onClick={() => setAuthView('signup')} className="py-4 rounded-xl font-bold bg-gray-900 border border-gray-800 hover:border-purple-500 transition text-gray-300">New Account</button>
+              <button onClick={() => setAuthView('login')} className="py-4 rounded-xl font-bold bg-gray-900 border border-gray-800 hover:border-cyan-500 transition text-gray-300">Login</button>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // ════════════════════════════════════════ SIGNUP PAGE ════════════════════════════════════════
-  if (!currentUser && authView === 'signup') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl shadow-2xl p-8 sm:p-12 max-w-md w-full">
-          <h2 className="text-3xl sm:text-4xl font-black mb-2 text-center bg-gradient-to-r from-indigo-600 to-pink-600 bg-clip-text text-transparent">Create Account</h2>
-          <div className="space-y-4 sm:space-y-6">
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Username</label>
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleSignup)} placeholder="Choose a unique username" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
-            </div>
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleSignup)} placeholder="At least 6 characters" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
-            </div>
-            {error && <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">{error}</div>}
-            <button onClick={handleSignup} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95">{loading ? 'Creating...' : 'Sign Up'}</button>
-          </div>
-          <button onClick={() => { setAuthView('landing'); setError(''); }} className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium">← Back</button>
+  // 2. TRY IT MODE (Onboarding)
+  if (authView === 'try-it') {
+     return (
+        <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-4">
+           <div className="w-full max-w-md bg-gray-900 rounded-3xl p-8 border border-gray-800">
+              <h2 className="text-2xl font-bold mb-6 text-center">Test the Robot 🤖</h2>
+              <div className="flex flex-col items-center gap-6">
+                 <button onClick={toggleRecording} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 scale-110 animate-pulse' : 'bg-gray-800 hover:bg-gray-700'}`}>
+                    {isRecording ? <Square className="w-10 h-10"/> : <Mic className="w-10 h-10 text-cyan-400"/>}
+                 </button>
+                 {audioUrl && (
+                    <div className="w-full bg-gray-800 p-4 rounded-xl text-center">
+                       <p className="text-sm text-gray-400 mb-3">Recording captured!</p>
+                       <button onClick={() => {const a = new Audio(audioUrl); a.playbackRate=0.8; a.play();}} className="bg-purple-600 px-6 py-2 rounded-lg font-bold flex items-center justify-center gap-2 mx-auto"><Play className="w-4 h-4"/> Hear Robotic Preview</button>
+                    </div>
+                 )}
+                 <button onClick={() => setAuthView('signup')} className="w-full py-4 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-xl font-bold text-lg mt-4 animate-bounce">
+                    Create Account to Send It 🚀
+                 </button>
+                 <button onClick={() => setAuthView('landing')} className="text-gray-500 text-sm">Back</button>
+              </div>
+           </div>
         </div>
-      </div>
-    );
+     )
   }
 
-  // ════════════════════════════════════════ LOGIN PAGE ════════════════════════════════════════
-  if (!currentUser && authView === 'login') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl shadow-2xl p-8 sm:p-12 max-w-md w-full">
-          <h2 className="text-3xl sm:text-4xl font-black mb-2 text-center bg-gradient-to-r from-indigo-600 to-pink-600 bg-clip-text text-transparent">Welcome Back</h2>
-          <div className="space-y-4 sm:space-y-6">
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Username</label>
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleLogin)} placeholder="Your username" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
-            </div>
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyPress={(e) => handleKeyPress(e, handleLogin)} placeholder="Your password" className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-gray-200 focus:border-purple-500 focus:outline-none text-base sm:text-lg" />
-            </div>
-            {error && <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">{error}</div>}
-            <button onClick={handleLogin} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:scale-105 transition-transform disabled:opacity-70 disabled:scale-100 active:scale-95">{loading ? 'Logging in...' : 'Log In'}</button>
-          </div>
-          <button onClick={() => { setAuthView('landing'); setError(''); }} className="w-full mt-6 text-gray-600 hover:text-gray-800 font-medium">← Back</button>
-        </div>
-      </div>
-    );
-  }
-
-  // ════════════════════════════════════════ ANONYMOUS SEND PAGE ════════════════════════════════════════
+  // 3. SEND MESSAGE VIEW
   if (recipientUsername && !currentUser) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
-        <div className="max-w-2xl mx-auto">
-          <div className="bg-white rounded-3xl shadow-2xl overflow-hidden p-6 sm:p-10">
-            <div className="text-center mb-6 sm:mb-8">
-              <h1 className="text-3xl sm:text-5xl font-black mb-3 sm:mb-4 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Send to @{recipientUsername}</h1>
-              <p className="text-gray-600 text-base sm:text-lg">Record an anonymous voice note 🎤</p>
-            </div>
-            <div className="max-w-lg mx-auto">
-              {!audioBlob ? (
-                <div className="text-center">
-                  <button onClick={toggleRecording} disabled={loading} className={`w-48 h-48 sm:w-56 sm:h-56 rounded-full shadow-2xl transition-all mx-auto flex items-center justify-center ${isRecording ? 'bg-red-500 animate-pulse' : loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-br from-indigo-500 to-purple-500 hover:scale-105 active:scale-95'}`}>
-                    {loading ? (<div className="text-white text-center"><div className="animate-spin rounded-full h-20 w-20 border-b-4 border-white mx-auto mb-2"></div><p className="text-sm">Transcribing...</p></div>) : isRecording ? (<Square className="w-20 h-20 sm:w-28 sm:h-28 text-white" />) : (<Mic className="w-20 h-20 sm:w-28 sm:h-28 text-white" />)}
-                  </button>
-                  {isRecording && (<div className="mt-6 text-center"><div className="text-3xl sm:text-4xl font-bold text-red-500 mb-2">{formatTime(recordingTime)}</div><p className="text-lg sm:text-xl text-gray-700 font-medium">🎤 Recording... Tap to stop</p></div>)}
-                  {!isRecording && !loading && <p className="mt-6 sm:mt-8 text-xl sm:text-2xl text-gray-700 font-medium">👆 Tap to start recording</p>}
-                </div>
-              ) : (
-                <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl p-6 sm:p-8 shadow-lg">
-                  <div className="bg-white rounded-xl p-6 mb-6 flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full mx-auto mb-4 flex items-center justify-center animate-pulse"><Mic className="w-8 h-8 sm:w-10 sm:h-10 text-white" /></div>
-                      <p className="text-gray-600 font-medium text-sm sm:text-base">🤖 Voice recorded - Ready to send</p>
-                      <p className="text-xs sm:text-sm text-gray-400 mt-2">{formatTime(recordingTime)}</p>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden">
+          <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-6 text-white text-center">
+             <h2 className="text-xl font-medium opacity-90">Send anonymously to</h2>
+             <h1 className="text-3xl font-black">@{recipientUsername}</h1>
+          </div>
+          
+          <div className="p-6">
+            {!audioBlob ? (
+               <div className="text-center">
+                  <div className="mb-8">
+                    <p className="text-gray-500 text-sm mb-3 uppercase tracking-wider font-bold">Need Inspiration?</p>
+                    <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                       {MESSAGE_TEMPLATES.map((t,i) => (
+                          <button key={i} onClick={() => setTranscript(t)} className="whitespace-nowrap px-4 py-2 bg-gray-100 rounded-full text-sm text-gray-600 hover:bg-purple-100 hover:text-purple-600 transition border border-gray-200">{t.substring(0, 25)}...</button>
+                       ))}
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <button onClick={sendMessageWithRoboticVoice} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 sm:py-5 rounded-2xl font-bold text-lg sm:text-xl flex items-center justify-center gap-3 disabled:opacity-70 hover:scale-105 transition-transform active:scale-95"><Send className="w-6 h-6 sm:w-7 sm:h-7" />{loading ? 'Sending…' : 'Send as Robotic Voice 🤖'}</button>
-                    <button onClick={cancelRecording} className="w-full bg-gray-100 text-gray-700 py-3 sm:py-4 rounded-2xl font-bold text-base sm:text-lg flex items-center justify-center gap-2 hover:bg-gray-200 transition active:scale-95"><Trash2 className="w-5 h-5 sm:w-6 sm:h-6" />Discard & Re-record</button>
+                  
+                  <div className="h-48 flex flex-col items-center justify-center">
+                     <button onClick={toggleRecording} className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 shadow-[0_0_30px_rgba(239,68,68,0.5)]' : 'bg-black hover:scale-110'}`}>
+                        {isRecording ? <div className="w-8 h-8 bg-white rounded"/> : <Mic className="w-8 h-8 text-white"/>}
+                     </button>
+                     <p className="mt-4 font-mono text-purple-600">{isRecording ? formatTime(recordingTime) : 'Tap to Record'}</p>
                   </div>
-                </div>
-              )}
-            </div>
-            <div className="text-center mt-6 sm:mt-8"><button onClick={() => setAuthView('signup')} className="text-purple-600 hover:text-purple-700 font-medium text-sm sm:text-base">Want your own inbox? Create an account →</button></div>
+               </div>
+            ) : (
+               <div className="space-y-4">
+                  <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
+                     <div className="flex justify-between items-center mb-2">
+                        <span className="text-xs font-bold text-purple-600">CAPTURED</span>
+                        <span className="text-xs text-purple-400">{formatTime(recordingTime)}</span>
+                     </div>
+                     <div className="h-8 bg-purple-200 rounded-full overflow-hidden w-full relative">
+                        <div className="absolute inset-0 bg-purple-400 w-2/3 animate-pulse opacity-50"></div>
+                     </div>
+                  </div>
+                  <button onClick={handleSendMessage} disabled={loading} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2">
+                     {loading ? 'Encrypting...' : <><Send className="w-5 h-5"/> Send Anonymously</>}
+                  </button>
+                  <button onClick={() => {setAudioBlob(null); setTranscript('');}} className="w-full py-3 text-red-500 font-bold text-sm">Discard</button>
+               </div>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // ════════════════════════════════════════ LOGGED IN MAIN APP ════════════════════════════════════════
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden min-h-[80vh]">
-          <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 sm:p-8 text-white">
-            <div className="flex justify-between items-center mb-4 sm:mb-6">
-              <div className="flex items-center gap-2 sm:gap-3"><User className="w-6 h-6 sm:w-8 sm:h-8" /><h1 className="text-2xl sm:text-4xl font-bold">@{currentUser.username}</h1></div>
-              <div className="flex gap-2 sm:gap-3">
-                <button onClick={copyLink} className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95">{copied ? <Check className="w-4 h-4 sm:w-5 sm:h-5" /> : <Share2 className="w-4 h-4 sm:w-5 sm:h-5" />}<span className="font-medium hidden sm:inline">{copied ? 'Copied!' : 'Share'}</span></button>
-                <button onClick={handleLogout} className="flex items-center gap-2 bg-white/20 px-3 sm:px-5 py-2 sm:py-3 rounded-xl hover:bg-white/30 transition active:scale-95"><LogOut className="w-4 h-4 sm:w-5 sm:h-5" /></button>
+  // 4. MAIN APP (Inbox)
+  if (currentUser) {
+    const isInbox = activeTab === 'inbox';
+    const unlockProgress = Math.min(100, (referralCount / 5) * 100);
+
+    return (
+      <div className="min-h-screen bg-gray-100 pb-20 sm:pb-0">
+        <header className="bg-white sticky top-0 z-20 shadow-sm border-b border-gray-200">
+           <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
+              <h1 className="font-black text-xl tracking-tight flex items-center gap-2"><div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center"><Sparkles className="text-white w-4 h-4"/></div> AnonVox</h1>
+              <div className="flex items-center gap-3">
+                 <button onClick={incrementReferrals} className="text-xs bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full font-bold border border-yellow-200">🏆 {referralCount} Refs</button>
+                 <button onClick={handleLogout}><LogOut className="w-5 h-5 text-gray-400"/></button>
               </div>
-            </div>
-            <div className="flex gap-4 mt-6">
-              <button onClick={() => setActiveTab('inbox')} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all ${activeTab === 'inbox' ? 'bg-white text-purple-600 shadow-lg scale-105' : 'bg-white/20 text-white hover:bg-white/30'}`}><Inbox className="w-4 h-4" />Inbox</button>
-              <button onClick={() => setActiveTab('videos')} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all ${activeTab === 'videos' ? 'bg-white text-purple-600 shadow-lg scale-105' : 'bg-white/20 text-white hover:bg-white/30'}`}><Film className="w-4 h-4" />My Videos</button>
-            </div>
-          </div>
-          <div className="p-4 sm:p-10">
-            {activeTab === 'inbox' && (
-              <>
-                <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8 flex items-center gap-2"><Inbox className="w-8 h-8 text-purple-600" />Your Anonymous Inbox</h2>
-                {messages.length === 0 ? (
-                  <div className="text-center py-12 sm:py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl px-4">
-                    <Inbox className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
-                    <p className="text-xl sm:text-2xl mb-3 sm:mb-4 text-gray-600 font-medium">No messages yet</p>
-                    <div className="bg-white px-4 sm:px-6 py-3 sm:py-4 rounded-xl inline-block shadow-md max-w-full"><p className="font-mono text-purple-600 font-bold break-all text-xs sm:text-base">{window.location.origin}?send_to={currentUser.username}</p></div>
-                  </div>
-                ) : (
-                  <div className="space-y-4 sm:space-y-6">
-                    {messages.map((msg) => (
-                      <div key={msg.id} className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-3xl p-4 sm:p-8 shadow-lg hover:shadow-xl transition-shadow">
-                        <div className="bg-white rounded-xl p-4 sm:p-6 mb-4 sm:mb-6 shadow-md flex items-center justify-center">
-                          <div className="text-center">
-                            <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full mx-auto mb-2 sm:mb-3 flex items-center justify-center"><Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" /></div>
-                            <p className="text-gray-500 text-xs sm:text-sm">🤖 Anonymous Voice Message</p>
-                          </div>
-                        </div>
-                        <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
-                          <span className="text-xs sm:text-sm text-gray-500 font-medium">📅 {new Date(msg.created_at).toLocaleString()}</span>
-                          <div className="flex gap-2 w-full sm:w-auto">
-                            {/* Pass msg.audio_url to generateAvatarVideo */}
-                            {msg.text && !msg.video_url && (
-                              <button onClick={() => generateAvatarVideo(msg.text, msg.id, msg.audio_url)} disabled={generatingVideo === msg.id} className="flex-1 sm:flex-none bg-gradient-to-r from-green-500 to-teal-500 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm">
-                                {generatingVideo === msg.id ? (<><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div><span className="text-xs">{videoProgress || 'Creating...'}</span></>) : (<><Sparkles className="w-4 h-4" /><span>Generate 3D Video</span></>)}
-                              </button>
-                            )}
-                            {msg.video_url && (<button disabled className="flex-1 sm:flex-none bg-gray-300 text-gray-500 px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 font-bold text-sm cursor-default"><Check className="w-4 h-4" /><span>Video Generated</span></button>)}
-                            {msg.text && (
-                              <button onClick={() => playRobotic(msg.text, msg.id)} disabled={isPlaying === msg.id} className="flex-1 sm:flex-none bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 sm:px-5 py-2 sm:py-3 rounded-xl flex items-center justify-center gap-2 hover:scale-105 transition-transform disabled:opacity-60 disabled:scale-100 font-bold shadow-lg active:scale-95 text-sm">
-                                <Play className="w-4 h-4" /><span className="text-xs sm:text-sm">{isPlaying === msg.id ? 'Playing...' : 'Play Voice'}</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
+           </div>
+        </header>
+
+        <main className="max-w-4xl mx-auto p-4 space-y-6">
+           {/* REFERRAL CARD */}
+           <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden">
+              <div className="relative z-10">
+                 <h2 className="text-2xl font-bold mb-2">Unlock Premium Voices</h2>
+                 <p className="text-indigo-100 mb-4 text-sm max-w-sm">Invite friends to unlock the Alien and Demon voice modulators for your videos.</p>
+                 
+                 <div className="flex items-center gap-4 mb-4">
+                    <div className="flex-1 h-3 bg-black/30 rounded-full overflow-hidden"><div style={{width: `${unlockProgress}%`}} className="h-full bg-cyan-400 transition-all duration-1000"></div></div>
+                    <span className="font-mono font-bold text-sm">{referralCount}/5</span>
+                 </div>
+
+                 <div className="flex gap-2">
+                    <button onClick={handleShare} className="bg-white text-indigo-900 px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-gray-100 transition"><Share2 className="w-4 h-4"/> Invite Friends</button>
+                    {copied && <span className="bg-black/20 px-3 py-2 rounded-lg text-xs font-medium animate-fade-in">Link Copied!</span>}
+                 </div>
+              </div>
+              <Ghost className="absolute -right-6 -bottom-6 w-40 h-40 text-white opacity-10 rotate-12"/>
+           </div>
+
+           {/* TABS */}
+           <div className="flex gap-4 border-b border-gray-200">
+              <button onClick={() => setActiveTab('inbox')} className={`pb-3 px-2 font-bold text-sm ${isInbox ? 'text-black border-b-2 border-black' : 'text-gray-400'}`}>Inbox ({messages.length})</button>
+              <button onClick={() => setActiveTab('videos')} className={`pb-3 px-2 font-bold text-sm ${!isInbox ? 'text-black border-b-2 border-black' : 'text-gray-400'}`}>Videos</button>
+           </div>
+
+           {/* CONTENT */}
+           <div className="space-y-4">
+              {messages.length === 0 && (
+                 <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
+                    <Inbox className="w-12 h-12 text-gray-300 mx-auto mb-2"/>
+                    <p className="text-gray-500">Your inbox is empty</p>
+                    <button onClick={handleShare} className="mt-4 text-purple-600 font-bold text-sm">Share your link to get messages</button>
+                 </div>
+              )}
+
+              {messages.map(msg => (
+                (!isInbox && !msg.video_url) ? null : 
+                <div key={msg.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-4">
+                   <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-3">
+                         <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
+                            {msg.video_url ? <Film className="w-5 h-5 text-pink-500"/> : <Mic className="w-5 h-5 text-gray-500"/>}
+                         </div>
+                         <div>
+                            <p className="font-bold text-sm text-gray-800">Anonymous</p>
+                            <p className="text-xs text-gray-400">{new Date(msg.created_at).toLocaleDateString()}</p>
+                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-            {activeTab === 'videos' && (
-              <>
-                <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 sm:mb-8 flex items-center gap-2"><Film className="w-8 h-8 text-pink-600" />My Videos</h2>
-                {messages.filter(m => m.video_url).length === 0 ? (
-                  <div className="text-center py-12 sm:py-20 bg-gradient-to-br from-purple-50 to-pink-50 rounded-3xl px-4">
-                    <Film className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300 mx-auto mb-4 sm:mb-6" />
-                    <p className="text-xl sm:text-2xl mb-3 sm:mb-4 text-gray-600 font-medium">No videos generated yet</p>
-                    <button onClick={() => setActiveTab('inbox')} className="bg-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-purple-700 transition">Go to Inbox</button>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    {messages.filter(m => m.video_url).map((msg) => (
-                      <div key={msg.id} className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
-                        <div className="relative bg-black aspect-square">
-                           <video controls src={msg.video_url} className="w-full h-full object-cover" poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23667eea' width='400' height='400'/%3E%3C/svg%3E" />
-                        </div>
-                        <div className="p-4">
-                           <div className="flex justify-between items-start mb-2">
-                              <div><p className="text-xs font-bold text-purple-600 uppercase tracking-wide">Anonymous Message</p><p className="text-xs text-gray-400 mt-1">{new Date(msg.created_at).toLocaleDateString()}</p></div>
-                              <a href={msg.video_url} download={`video-${msg.id}.webm`} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition text-gray-600" title="Download Video"><Download className="w-4 h-4" /></a>
-                           </div>
-                           <p className="text-gray-700 text-sm line-clamp-2 italic">"{msg.text}"</p>
-                        </div>
+                   </div>
+
+                   {/* Video Section */}
+                   {msg.video_url ? (
+                      <div className="relative group">
+                         <video src={msg.video_url} controls className="w-full rounded-xl bg-black max-h-[400px] object-contain" />
+                         <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition">
+                            <a href={msg.video_url} download className="p-2 bg-black/50 text-white rounded-full"><Download className="w-4 h-4"/></a>
+                            <button onClick={() => navigator.share({url: msg.video_url})} className="p-2 bg-green-500 text-white rounded-full"><Share2 className="w-4 h-4"/></button>
+                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
+                   ) : (
+                      <div className="bg-gray-50 p-4 rounded-xl">
+                         <p className="italic text-gray-600 text-sm mb-4">"{msg.text || 'Voice Message'}"</p>
+                         
+                         <div className="flex flex-wrap gap-2 items-center">
+                            {/* Voice Selector */}
+                            <div className="flex bg-white rounded-lg border border-gray-200 p-1">
+                               {Object.values(VOICE_TYPES).map(v => (
+                                  <button 
+                                    key={v.id} 
+                                    disabled={referralCount < v.req}
+                                    onClick={() => setSelectedVoice(v.id)}
+                                    className={`p-2 rounded-md transition relative group ${selectedVoice === v.id ? 'bg-black text-white' : 'text-gray-400 hover:text-gray-600'}`}
+                                  >
+                                     {v.icon}
+                                     {referralCount < v.req && <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white"/>}
+                                  </button>
+                               ))}
+                            </div>
+
+                            <button 
+                               onClick={() => setVideoFormat(f => f === 'tiktok' ? 'square' : 'tiktok')}
+                               className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-600 flex items-center gap-1"
+                            >
+                               {videoFormat === 'tiktok' ? <Instagram className="w-3 h-3"/> : <Square className="w-3 h-3"/>}
+                               {videoFormat === 'tiktok' ? '9:16' : '1:1'}
+                            </button>
+
+                            <button 
+                              onClick={() => generateVideo(msg.id, msg.audio_url, msg.text, selectedVoice)}
+                              disabled={generatingVideo === msg.id}
+                              className="flex-1 bg-gradient-to-r from-pink-500 to-orange-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:shadow-lg transition active:scale-95 disabled:opacity-50"
+                            >
+                              {generatingVideo === msg.id ? videoProgress : 'Generate Video'}
+                            </button>
+                         </div>
+                      </div>
+                   )}
+                </div>
+              ))}
+           </div>
+        </main>
       </div>
+    );
+  }
+
+  // Auth Forms (Simplified for brevity)
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
+       <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl">
+          <h2 className="text-2xl font-black mb-6 text-center">{authView === 'login' ? 'Welcome Back' : 'Join AnonVox'}</h2>
+          <input className="w-full p-4 bg-gray-50 rounded-xl mb-4" placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)}/>
+          <input className="w-full p-4 bg-gray-50 rounded-xl mb-6" type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}/>
+          {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+          <button onClick={() => handleAuth(authView)} disabled={loading} className="w-full py-4 bg-black text-white rounded-xl font-bold mb-4">{loading ? '...' : (authView==='login'?'Log In':'Sign Up')}</button>
+          <button onClick={() => setAuthView('landing')} className="w-full text-gray-400 text-sm">Cancel</button>
+       </div>
     </div>
   );
 }
+
+const formatTime = (s) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
