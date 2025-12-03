@@ -343,6 +343,8 @@ export default function AnonymousVoiceApp() {
     setVideoProgress('Starting...');
     
     try {
+      console.log('Starting video generation for message:', messageId);
+      
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
       canvas.height = 1080;
@@ -353,100 +355,6 @@ export default function AnonymousVoiceApp() {
       const totalFrames = Math.ceil(estimatedDuration * 30);
       
       setVideoProgress('Rendering 3D avatar...');
-      const frames = [];
-      
-      for (let frame = 0; frame < totalFrames; frame++) {
-        const time = frame / 30;
-        
-        const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
-        gradient.addColorStop(0, '#667eea');
-        gradient.addColorStop(1, '#764ba2');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 1080, 1080);
-        
-        ctx.save();
-        ctx.translate(540, 540);
-        
-        const bobOffset = Math.sin(time * 2) * 20;
-        ctx.translate(0, bobOffset);
-        
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-        ctx.shadowBlur = 30;
-        ctx.shadowOffsetX = 10;
-        ctx.shadowOffsetY = 10;
-        
-        ctx.fillStyle = '#c0c5ce';
-        ctx.fillRect(-200, -200, 400, 400);
-        
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#e0e5ee';
-        ctx.fillRect(-180, -180, 360, 360);
-        
-        const blinkPhase = Math.floor(time * 3) % 10;
-        const eyeHeight = blinkPhase === 0 ? 20 : 80;
-        
-        ctx.shadowColor = '#4a90e2';
-        ctx.shadowBlur = 20;
-        ctx.fillStyle = '#4a90e2';
-        ctx.beginPath();
-        ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.fillStyle = '#2c5aa0';
-        ctx.beginPath();
-        ctx.ellipse(-80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        const mouthOpen = Math.abs(Math.sin(time * 10)) * 60 + 30;
-        ctx.shadowColor = '#000';
-        ctx.shadowBlur = 10;
-        ctx.fillStyle = '#2c3e50';
-        ctx.fillRect(-120, 80, 240, mouthOpen);
-        
-        ctx.fillStyle = '#95a5a6';
-        ctx.fillRect(-15, -250, 30, 60);
-        
-        const antennaPulse = Math.sin(time * 4) * 10 + 40;
-        ctx.shadowColor = '#e74c3c';
-        ctx.shadowBlur = 25;
-        ctx.fillStyle = '#e74c3c';
-        ctx.beginPath();
-        ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.lineWidth = 3;
-        for (let i = 0; i < 3; i++) {
-          const waveRadius = 250 + i * 40 + Math.sin(time * 5 - i) * 20;
-          const waveAlpha = (Math.sin(time * 5 - i) + 1) / 4;
-          ctx.strokeStyle = `rgba(255, 255, 255, ${waveAlpha})`;
-          ctx.beginPath();
-          ctx.arc(0, 0, waveRadius, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-        
-        ctx.restore();
-        
-        await new Promise(resolve => {
-          canvas.toBlob(blob => {
-            frames.push(blob);
-            resolve();
-          }, 'image/jpeg', 0.8);
-        });
-        
-        if (frame % 10 === 0) {
-          setVideoProgress(`Frame ${frame}/${totalFrames}`);
-        }
-      }
-      
-      setVideoProgress('Adding robotic voice...');
       
       const stream = canvas.captureStream(30);
       const chunks = [];
@@ -459,34 +367,179 @@ export default function AnonymousVoiceApp() {
       
       const videoBlob = await new Promise(resolve => {
         recorder.onstop = () => {
+          console.log('Recording stopped, chunks:', chunks.length);
           resolve(new Blob(chunks, { type: 'video/webm' }));
         };
         
         recorder.start();
+        console.log('Recording started');
         
+        let frameIndex = 0;
+        const drawFrame = () => {
+          if (frameIndex < totalFrames) {
+            const time = frameIndex / 30;
+            
+            // Clear and draw background gradient
+            const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
+            gradient.addColorStop(0, '#667eea');
+            gradient.addColorStop(1, '#764ba2');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 1080, 1080);
+            
+            ctx.save();
+            ctx.translate(540, 540);
+            
+            const bobOffset = Math.sin(time * 2) * 20;
+            ctx.translate(0, bobOffset);
+            
+            // Robot head shadow
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+            ctx.shadowBlur = 30;
+            ctx.shadowOffsetX = 10;
+            ctx.shadowOffsetY = 10;
+            
+            // Robot head
+            ctx.fillStyle = '#c0c5ce';
+            ctx.fillRect(-200, -200, 400, 400);
+            
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#e0e5ee';
+            ctx.fillRect(-180, -180, 360, 360);
+            
+            // Eyes with blink
+            const blinkPhase = Math.floor(time * 3) % 10;
+            const eyeHeight = blinkPhase === 0 ? 20 : 80;
+            
+            ctx.shadowColor = '#4a90e2';
+            ctx.shadowBlur = 20;
+            ctx.fillStyle = '#4a90e2';
+            ctx.beginPath();
+            ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Pupils
+            ctx.fillStyle = '#2c5aa0';
+            ctx.beginPath();
+            ctx.ellipse(-80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Animated mouth
+            const mouthOpen = Math.abs(Math.sin(time * 10)) * 60 + 30;
+            ctx.shadowColor = '#000';
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#2c3e50';
+            ctx.fillRect(-120, 80, 240, mouthOpen);
+            
+            // Antenna
+            ctx.fillStyle = '#95a5a6';
+            ctx.fillRect(-15, -250, 30, 60);
+            
+            // Antenna light
+            const antennaPulse = Math.sin(time * 4) * 10 + 40;
+            ctx.shadowColor = '#e74c3c';
+            ctx.shadowBlur = 25;
+            ctx.fillStyle = '#e74c3c';
+            ctx.beginPath();
+            ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Sound waves
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 3;
+            for (let i = 0; i < 3; i++) {
+              const waveRadius = 250 + i * 40 + Math.sin(time * 5 - i) * 20;
+              const waveAlpha = (Math.sin(time * 5 - i) + 1) / 4;
+              ctx.strokeStyle = `rgba(255, 255, 255, ${waveAlpha})`;
+              ctx.beginPath();
+              ctx.arc(0, 0, waveRadius, 0, Math.PI * 2);
+              ctx.stroke();
+            }
+            
+            ctx.restore();
+            
+            frameIndex++;
+            if (frameIndex % 30 === 0) {
+              setVideoProgress(`Rendering: ${Math.floor(frameIndex / totalFrames * 100)}%`);
+            }
+            requestAnimationFrame(drawFrame);
+          } else {
+            console.log('All frames drawn, stopping recorder');
+            setTimeout(() => recorder.stop(), 500);
+          }
+        };
+        
+        // Start speech synthesis
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 0.7;
         utterance.pitch = 0.3;
         utterance.volume = 1.0;
         
-        utterance.onend = () => {
-          setTimeout(() => recorder.stop(), 500);
+        utterance.onstart = () => {
+          console.log('Speech started');
+          drawFrame();
         };
         
-        let frameIndex = 0;
-        const drawFrame = () => {
-          if (frameIndex < frames.length) {
-            createImageBitmap(frames[frameIndex]).then(img => {
-              ctx.drawImage(img, 0, 0);
-              frameIndex++;
-              setTimeout(drawFrame, 1000 / 30);
-            });
-          }
-        };
-        
-        drawFrame();
         window.speechSynthesis.speak(utterance);
       });
+      
+      console.log('Video blob created, size:', videoBlob.size);
+      setVideoProgress('Uploading...');
+      
+      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
+      console.log('Uploading to storage:', fileName);
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('voices')
+        .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
+      
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        throw uploadError;
+      }
+      
+      console.log('Upload successful:', uploadData);
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('voices')
+        .getPublicUrl(fileName);
+      
+      console.log('Public URL:', publicUrl);
+      
+      // Update the database
+      const { data: updateData, error: dbError } = await supabase
+        .from('messages')
+        .update({ video_url: publicUrl })
+        .eq('id', messageId)
+        .select();
+
+      if (dbError) {
+        console.error('Database update error:', dbError);
+        throw new Error('Database save failed: ' + dbError.message);
+      }
+      
+      console.log('Database updated:', updateData);
+      
+      // Force refresh messages from database
+      console.log('Fetching fresh messages...');
+      await fetchMessages(currentUser.username);
+      
+      setVideoProgress('');
+      setGeneratingVideo(null);
+      alert('✅ Video generated successfully! Check the "My Videos" tab.');
+      
+    } catch (error) {
+      console.error('Video generation error:', error);
+      alert('Failed to generate video: ' + error.message);
+      setGeneratingVideo(null);
+      setVideoProgress('');
+    }
+  };
       
       setVideoProgress('Uploading...');
       
