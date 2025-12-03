@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, Trash2, Film, Download } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
+// Put your own keys here
 const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
@@ -52,6 +53,21 @@ export default function AnonymousVoiceApp() {
       }
     }
   }, []);
+
+  // NEW: Auto-refresh messages to handle DB delays and sync
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const interval = setInterval(() => {
+      // Only refresh if we are logged in and looking at lists
+      if (activeTab === 'videos' || activeTab === 'inbox') {
+        console.log('[DEBUG] 🔄 Auto-refreshing messages...');
+        fetchMessages(currentUser.username);
+      }
+    }, 8000); // Every 8 seconds
+
+    return () => clearInterval(interval);
+  }, [currentUser, activeTab]);
 
   const fetchMessages = async (user) => {
     const { data } = await supabase
@@ -337,7 +353,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // 'async' is here to prevent build errors
+  // !!! Fixed generateAvatarVideo with correct state updates !!!
   const generateAvatarVideo = async (text, messageId) => {
     setGeneratingVideo(messageId);
     setVideoProgress('Starting...');
@@ -520,21 +536,19 @@ export default function AnonymousVoiceApp() {
 
       if (dbError) throw new Error('Database save failed: ' + dbError.message);
       
-      // 1. Optimistic update (fast)
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.id === messageId ? { ...msg, video_url: publicUrl } : msg
-        )
-      );
-
-      // 2. Real refresh (reliable)
+      // --- CRITICAL FIX START ---
+      // We removed the optimistic local update here to avoid race conditions.
+      // Instead, we wait for the DB to confirm, then fetch fresh data.
       if (currentUser) {
-          await fetchMessages(currentUser.username);
+        console.log('[DEBUG] 🔄 Refreshing messages from DB to confirm video...');
+        await fetchMessages(currentUser.username);
       }
+      // --- CRITICAL FIX END ---
 
       setVideoProgress('');
+      setGeneratingVideo(null);
       setActiveTab('videos'); 
-      alert('Video uploaded! Switched to My Videos tab.');
+      alert('Video generated! Check the "My Videos" tab.');
       
     } catch (error) {
       console.error('Video generation error:', error);
