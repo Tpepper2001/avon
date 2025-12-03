@@ -528,7 +528,7 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-    // Update the database
+  // Update the database
       const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -561,7 +561,6 @@ export default function AnonymousVoiceApp() {
       setTimeout(() => {
         alert('✅ Video generated successfully! It should now appear in the My Videos tab.');
       }, 300);
-      
     } catch (error) {
       console.error('Video generation error:', error);
       alert('Failed to generate video: ' + error.message);
