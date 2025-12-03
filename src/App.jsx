@@ -31,7 +31,8 @@ export default function AnonymousVoiceApp() {
   // Video Generation States
   const [generatingVideo, setGeneratingVideo] = useState(null);
   const [videoProgress, setVideoProgress] = useState('');
-  const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false); // Fixed: Added missing state
+  // FIXED: Added missing state variable
+  const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -557,9 +558,9 @@ export default function AnonymousVoiceApp() {
       setTimeout(async () => {
         try {
           console.log('[DEBUG] Post-generation background refresh...');
-          // FIXED: Removed ! syntax error (currentUser!.username -> currentUser.username)
+          // FIXED: Removed invalid '!' syntax here (currentUser!.username -> currentUser.username)
           if (currentUser && currentUser.username) {
-             await fetchMessages(currentUser.username); 
+            await fetchMessages(currentUser.username); 
           }
         } catch (err) {
           console.error('Background refresh failed:', err);
@@ -567,7 +568,7 @@ export default function AnonymousVoiceApp() {
           // Always release the cooldown
           setIsRefreshingAfterGeneration(false);
         }
-      }, 1000); // 1 second is more than enough for local state + Supabase edge cache
+      }, 1000); 
 
       // 6. Notify user
       setTimeout(() => {
