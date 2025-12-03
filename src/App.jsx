@@ -1086,4 +1086,3 @@ export default function AnonymousVoiceApp() {
 }
   );
 }
-```
