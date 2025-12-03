@@ -28,8 +28,10 @@ export default function AnonymousVoiceApp() {
   const [error, setError] = useState('');
   const [recordingTime, setRecordingTime] = useState(0);
 
+  // Video Generation States
   const [generatingVideo, setGeneratingVideo] = useState(null);
   const [videoProgress, setVideoProgress] = useState('');
+  const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false); // Fixed: Added missing state
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -59,15 +61,15 @@ export default function AnonymousVoiceApp() {
     if (!currentUser) return;
 
     const interval = setInterval(() => {
-      // Only refresh if we are logged in and looking at lists
-      if (activeTab === 'videos' || activeTab === 'inbox') {
+      // Only refresh if we are logged in, looking at lists, and NOT currently in the "cooldown" phase after generating a video
+      if ((activeTab === 'videos' || activeTab === 'inbox') && !isRefreshingAfterGeneration) {
         console.log('[DEBUG] 🔄 Auto-refreshing messages...');
         fetchMessages(currentUser.username);
       }
     }, 8000); // Every 8 seconds
 
     return () => clearInterval(interval);
-  }, [currentUser, activeTab]);
+  }, [currentUser, activeTab, isRefreshingAfterGeneration]);
 
   const fetchMessages = async (user) => {
     const { data } = await supabase
@@ -528,46 +530,50 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-// 1. Update database
-const { error: dbError } = await supabase
-  .from('messages')
-  .update({ video_url: publicUrl })
-  .eq('id', messageId);
+      // 1. Update database
+      const { error: dbError } = await supabase
+        .from('messages')
+        .update({ video_url: publicUrl })
+        .eq('id', messageId);
 
-if (dbError) throw new Error('Failed to save video URL: ' + dbError.message);
+      if (dbError) throw new Error('Failed to save video URL: ' + dbError.message);
 
-console.log('[DEBUG] Database updated with video_url for message:', messageId);
+      console.log('[DEBUG] Database updated with video_url for message:', messageId);
 
-// 2. Optimistically update UI immediately
-setMessages(prev =>
-  prev.map(m => (m.id === messageId ? { ...m, video_url: publicUrl } : m))
-);
+      // 2. Optimistically update UI immediately
+      setMessages(prev =>
+        prev.map(m => (m.id === messageId ? { ...m, video_url: publicUrl } : m))
+      );
 
-// 3. Clear generation state + switch tab
-setGeneratingVideo(null);
-setVideoProgress('');
-setActiveTab('videos');
+      // 3. Clear generation state + switch tab
+      setGeneratingVideo(null);
+      setVideoProgress('');
+      setActiveTab('videos');
 
-// 4. Prevent auto-refresh from racing and overwriting our optimistic update
-setIsRefreshingAfterGeneration(true);
+      // 4. Prevent auto-refresh from racing and overwriting our optimistic update
+      setIsRefreshingAfterGeneration(true);
 
-// 5. Do a single, safe background refresh after React has committed
-setTimeout(async () => {
-  try {
-    console.log('[DEBUG] Post-generation background refresh...');
-    await fetchMessages(currentUser!.username); // ensure fresh list
-  } catch (err) {
-    console.error('Background refresh failed:', err);
-  } finally {
-    // Always release the cooldown
-    setIsRefreshingAfterGeneration(false);
-  }
-}, 1000); // 1 second is more than enough for local state + Supabase edge cache
+      // 5. Do a single, safe background refresh after React has committed
+      setTimeout(async () => {
+        try {
+          console.log('[DEBUG] Post-generation background refresh...');
+          // FIXED: Removed ! syntax error (currentUser!.username -> currentUser.username)
+          if (currentUser && currentUser.username) {
+             await fetchMessages(currentUser.username); 
+          }
+        } catch (err) {
+          console.error('Background refresh failed:', err);
+        } finally {
+          // Always release the cooldown
+          setIsRefreshingAfterGeneration(false);
+        }
+      }, 1000); // 1 second is more than enough for local state + Supabase edge cache
 
-// 6. Notify user
-setTimeout(() => {
-  alert('Video generated successfully! Check the My Videos tab.');
-}, 300);
+      // 6. Notify user
+      setTimeout(() => {
+        alert('Video generated successfully! Check the My Videos tab.');
+      }, 300);
+
     } catch (error) {
       console.error('Video generation error:', error);
       alert('Failed to generate video: ' + error.message);
