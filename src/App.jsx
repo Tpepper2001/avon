@@ -31,7 +31,6 @@ export default function AnonymousVoiceApp() {
   // Video Generation States
   const [generatingVideo, setGeneratingVideo] = useState(null);
   const [videoProgress, setVideoProgress] = useState('');
-  // FIXED: Added missing state variable
   const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false);
 
   const mediaRecorderRef = useRef(null);
@@ -97,11 +96,12 @@ export default function AnonymousVoiceApp() {
 
     setLoading(true);
 
+    // FIX: Use maybeSingle() to handle "no user found" gracefully (returns null instead of error)
     const { data: existing } = await supabase
       .from('users')
       .select('username')
       .eq('username', username)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       setError('Username already taken');
@@ -132,12 +132,13 @@ export default function AnonymousVoiceApp() {
     setError('');
     setLoading(true);
 
+    // FIX: Use maybeSingle() to handle invalid credentials gracefully (returns null instead of 406 error)
     const { data, error: loginError } = await supabase
       .from('users')
       .select('username')
       .eq('username', username)
       .eq('password', password)
-      .single();
+      .maybeSingle();
 
     if (loginError || !data) {
       setError('Invalid username or password');
@@ -558,7 +559,7 @@ export default function AnonymousVoiceApp() {
       setTimeout(async () => {
         try {
           console.log('[DEBUG] Post-generation background refresh...');
-          // FIXED: Removed invalid '!' syntax here (currentUser!.username -> currentUser.username)
+          // FIXED: Use standard JS check to avoid build errors
           if (currentUser && currentUser.username) {
             await fetchMessages(currentUser.username); 
           }
