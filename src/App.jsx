@@ -31,8 +31,7 @@ export default function AnonymousVoiceApp() {
   // Video Generation States
   const [generatingVideo, setGeneratingVideo] = useState(null);
   const [videoProgress, setVideoProgress] = useState('');
-  // We don't strictly need isRefreshingAfterGeneration anymore due to the new merge logic, 
-  // but we'll keep it as a safety buffer.
+  // Prevent auto-refresh collisions
   const [isRefreshingAfterGeneration, setIsRefreshingAfterGeneration] = useState(false);
 
   const mediaRecorderRef = useRef(null);
@@ -58,7 +57,7 @@ export default function AnonymousVoiceApp() {
     }
   }, []);
 
-  // Auto-refresh messages
+  // Auto-refresh messages logic
   useEffect(() => {
     if (!currentUser) return;
 
@@ -72,7 +71,6 @@ export default function AnonymousVoiceApp() {
     return () => clearInterval(interval);
   }, [currentUser, activeTab, isRefreshingAfterGeneration]);
 
-  // FIX: Merge logic to prevent videos from disappearing
   const fetchMessages = async (user) => {
     const { data } = await supabase
       .from('messages')
@@ -82,9 +80,7 @@ export default function AnonymousVoiceApp() {
 
     if (data) {
       setMessages(prevMessages => {
-        // We compare the new data from DB with our current local state.
-        // If local state has a video_url but DB has null, we KEEP the local video_url.
-        // This handles the "Disappearing Video" issue perfectly.
+        // Intelligent Merge: Don't overwrite a local video_url with a null from DB
         return data.map(newMsg => {
           const localMsg = prevMessages.find(p => p.id === newMsg.id);
           if (localMsg && localMsg.video_url && !newMsg.video_url) {
@@ -261,7 +257,6 @@ export default function AnonymousVoiceApp() {
     setRecordingTime(0);
   };
 
-  // FIX: Updated to save the AUDIO BLOB to the database
   const sendMessageWithRoboticVoice = async () => {
     if (!transcript && !audioBlob) {
       alert('Please record a voice message first');
@@ -293,7 +288,7 @@ export default function AnonymousVoiceApp() {
     const { error } = await supabase.from('messages').insert({
         username: recipient,
         text: transcript || '[Voice message]',
-        audio_url: uploadedAudioUrl, // Saving the URL!
+        audio_url: uploadedAudioUrl,
     });
 
     if (error) {
@@ -314,87 +309,97 @@ export default function AnonymousVoiceApp() {
     setLoading(false);
   };
 
-  // FIX: New helper to fetch audio, apply "Robotic" effect, and return audio track
+  // --- AUDIO PROCESSING HELPERS ---
   const getRoboticAudioStream = async (url) => {
     try {
         const response = await fetch(url);
+        if (!response.ok) throw new Error("Network response was not ok");
         const arrayBuffer = await response.arrayBuffer();
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        await audioContext.resume(); // Vital for mobile/some browsers
+        
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         
         // --- ROBOTIC EFFECT CHAIN ---
-        // 1. Pitch shift (Detune)
-        source.detune.value = -400; // Lower pitch by 400 cents
+        // 1. Lower Pitch
+        source.detune.value = -800; // Deeper robot voice
 
-        // 2. Ring Modulator effect (for robotic metal sound)
+        // 2. Ring Modulator (Metallic effect)
         const oscillator = audioContext.createOscillator();
-        oscillator.type = 'square';
-        oscillator.frequency.value = 50; // 50Hz metallic buzz
+        oscillator.type = 'sawtooth';
+        oscillator.frequency.value = 40; 
         oscillator.start();
 
         const gainOsc = audioContext.createGain();
-        gainOsc.gain.value = 0.15; // Low mix
-        oscillator.connect(gainOsc);
+        gainOsc.gain.value = 0.05; // Subtle buzz
+
+        // 3. Main Gain (Volume Boost)
+        const mainGain = audioContext.createGain();
+        mainGain.gain.value = 2.5; // Boost volume significantly
 
         const dest = audioContext.createMediaStreamDestination();
         
-        // Connect voice
-        source.connect(dest);
+        // Connections
+        source.connect(mainGain); // Connect source to volume boost
+        mainGain.connect(dest);   // Connect volume to destination
         
-        // Connect oscillator (mixer)
+        // Mix in the oscillator for metallic sound
+        oscillator.connect(gainOsc);
         gainOsc.connect(dest);
-        
-        // Connect to local speakers so user can hear while generating (optional)
-        // source.connect(audioContext.destination);
-
-        source.start(0);
 
         return { 
             stream: dest.stream, 
-            duration: audioBuffer.duration 
+            duration: audioBuffer.duration,
+            source: source // Return source so we can start it later
         };
     } catch (e) {
-        console.error("Error processing audio:", e);
+        console.error("Error processing audio (CORS or Decode):", e);
         return null;
     }
   };
 
   const generateAvatarVideo = async (text, messageId, messageAudioUrl) => {
     setGeneratingVideo(messageId);
-    setVideoProgress('Starting...');
+    setVideoProgress('Initializing...');
     setIsRefreshingAfterGeneration(true);
     
     try {
-      // 1. Setup Audio First (if available) to determine duration
       let audioStream = null;
-      let duration = 5; // Default 5 seconds
+      let audioSource = null;
+      let duration = 5; // Fallback duration
 
+      // 1. Prepare Audio
       if (messageAudioUrl) {
-          setVideoProgress('Processing audio...');
+          setVideoProgress('Downloading audio...');
           const result = await getRoboticAudioStream(messageAudioUrl);
           if (result) {
               audioStream = result.stream;
+              audioSource = result.source;
               duration = result.duration;
+              console.log("Audio prepared, duration:", duration);
+          } else {
+            console.warn("Audio processing failed, falling back to silent video.");
+            alert("Could not process audio (likely CORS issue). Video will be silent.");
           }
       } else {
-          // Estimate duration from text if no audio
+          // Estimate duration from text
           const wordCount = text ? text.split(' ').length : 10;
           duration = Math.max(3, (wordCount / 150) * 60 / 0.7);
       }
 
+      // 2. Prepare Video Canvas
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
       canvas.height = 1080;
       const ctx = canvas.getContext('2d');
-      
       const totalFrames = Math.ceil(duration * 30);
-      
-      setVideoProgress('Rendering 3D avatar...');
+      setVideoProgress('Rendering frames...');
       const frames = [];
       
+      // 3. Render Visuals
       for (let frame = 0; frame < totalFrames; frame++) {
         const time = frame / 30;
         
@@ -412,34 +417,27 @@ export default function AnonymousVoiceApp() {
         const bobOffset = Math.sin(time * 2) * 20;
         ctx.translate(0, bobOffset);
         
-        // Head Shadow
+        // Head
         ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
         ctx.shadowBlur = 30;
         ctx.shadowOffsetX = 10;
         ctx.shadowOffsetY = 10;
-        
-        // Head Shape
         ctx.fillStyle = '#c0c5ce';
         ctx.fillRect(-200, -200, 400, 400);
         ctx.shadowBlur = 0;
         ctx.fillStyle = '#e0e5ee';
         ctx.fillRect(-180, -180, 360, 360);
         
-        // Eyes (Blinking)
+        // Eyes
         const blinkPhase = Math.floor(time * 3) % 10;
         const eyeHeight = blinkPhase === 0 ? 20 : 80;
-        
         ctx.shadowColor = '#4a90e2';
         ctx.shadowBlur = 20;
         ctx.fillStyle = '#4a90e2';
-        ctx.beginPath();
-        ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2); ctx.fill();
         
-        // Mouth (Talking animation)
+        // Mouth
         const mouthOpen = Math.abs(Math.sin(time * 15)) * 60 + 20;
         ctx.shadowColor = '#000';
         ctx.shadowBlur = 10;
@@ -453,31 +451,32 @@ export default function AnonymousVoiceApp() {
         ctx.shadowColor = '#e74c3c';
         ctx.shadowBlur = 25;
         ctx.fillStyle = '#e74c3c';
-        ctx.beginPath();
-        ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2); ctx.fill();
         
         ctx.restore();
-        
         await new Promise(resolve => canvas.toBlob(blob => { frames.push(blob); resolve(); }, 'image/jpeg', 0.8));
         
-        if (frame % 15 === 0) setVideoProgress(`Frame ${frame}/${totalFrames}`);
+        if (frame % 30 === 0) setVideoProgress(`Rendering ${Math.round((frame/totalFrames)*100)}%`);
       }
       
-      setVideoProgress('Compiling with Audio...');
+      setVideoProgress('Encoding...');
       
+      // 4. Combine Video + Audio
       const canvasStream = canvas.captureStream(30);
-      
-      // FIX: MERGE AUDIO TRACK INTO VIDEO STREAM
+      let finalStream = canvasStream;
+
       if (audioStream) {
+          // Create a new stream combining video tracks and audio tracks
+          const videoTracks = canvasStream.getVideoTracks();
           const audioTracks = audioStream.getAudioTracks();
           if (audioTracks.length > 0) {
-              canvasStream.addTrack(audioTracks[0]);
+              finalStream = new MediaStream([...videoTracks, ...audioTracks]);
           }
       }
 
+      // 5. Record
       const chunks = [];
-      const recorder = new MediaRecorder(canvasStream, { 
+      const recorder = new MediaRecorder(finalStream, { 
         mimeType: 'video/webm;codecs=vp8,opus',
         videoBitsPerSecond: 2500000
       });
@@ -487,7 +486,10 @@ export default function AnonymousVoiceApp() {
       const videoBlob = await new Promise((resolve, reject) => {
         recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
         recorder.onerror = reject;
+        
+        // START EVERYTHING
         recorder.start();
+        if (audioSource) audioSource.start(0); // Start audio playback into the stream
         
         let frameIndex = 0;
         const drawFrame = async () => {
@@ -499,7 +501,7 @@ export default function AnonymousVoiceApp() {
               const img = await createImageBitmap(frames[frameIndex]);
               ctx.drawImage(img, 0, 0);
               frameIndex++;
-              setTimeout(drawFrame, 33); // ~30 FPS
+              setTimeout(drawFrame, 33);
           }
         };
         drawFrame();
@@ -524,7 +526,7 @@ export default function AnonymousVoiceApp() {
       setVideoProgress('');
       setActiveTab('videos');
       
-      setTimeout(() => setIsRefreshingAfterGeneration(false), 5000); 
+      setTimeout(() => setIsRefreshingAfterGeneration(false), 8000); 
       setTimeout(() => alert('Video generated with ROBOTIC VOICE! 🤖'), 300);
 
     } catch (error) {
