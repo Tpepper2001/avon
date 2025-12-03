@@ -502,19 +502,20 @@ export default function AnonymousVoiceApp() {
         .getPublicUrl(fileName);
       
       // Update the database
-      const { error: dbError } = await supabase
-        .from('messages')
-        .update({ video_url: publicUrl })
-        .eq('id', messageId);
+   // Update the database
+const { error: dbError } = await supabase
+  .from('messages')
+  .update({ video_url: publicUrl })
+  .eq('id', messageId);
 
-      if (dbError) throw new Error('Database save failed: ' + dbError.message);
-      
-      // Update LOCAL state immediately (Fixes "Empty My Videos" bug)
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.id === messageId ? { ...msg, video_url: publicUrl } : msg
-        )
-      );
+if (dbError) throw new Error('Database save failed: ' + dbError.message);
+
+// Fetch fresh messages from database
+await fetchMessages(currentUser.username);
+
+setVideoProgress('');
+setGeneratingVideo(null);
+alert('Video generated! Check the "My Videos" tab.');
 
       // Also try to fetch fresh from DB
       if (currentUser) {
