@@ -528,7 +528,7 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-  // Update the database
+// Update the database
       const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
