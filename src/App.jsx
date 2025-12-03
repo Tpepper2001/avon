@@ -528,39 +528,46 @@ export default function AnonymousVoiceApp() {
         .from('voices')
         .getPublicUrl(fileName);
       
-// Update the database
-      const { error: dbError } = await supabase
-        .from('messages')
-        .update({ video_url: publicUrl })
-        .eq('id', messageId);
+// 1. Update database
+const { error: dbError } = await supabase
+  .from('messages')
+  .update({ video_url: publicUrl })
+  .eq('id', messageId);
 
-      if (dbError) throw new Error('Database save failed: ' + dbError.message);
-      
-      console.log('[DEBUG] ✅ Database updated with video URL for message', messageId);
-      
-      // Optimistically update local state immediately
-      setMessages(prevMessages => 
-        prevMessages.map(m => 
-          m.id === messageId ? { ...m, video_url: publicUrl } : m
-        )
-      );
-      
-      setVideoProgress('');
-      setGeneratingVideo(null);
-      setActiveTab('videos'); 
-      
-      // Wait longer for DB replication, then refresh in background
-      setTimeout(async () => {
-        if (currentUser) {
-          console.log('[DEBUG] 🔄 Background refresh to verify video...');
-          await fetchMessages(currentUser.username);
-        }
-      }, 2000);
-      
-      // Use setTimeout to show alert after tab switch completes
-      setTimeout(() => {
-        alert('✅ Video generated successfully! It should now appear in the My Videos tab.');
-      }, 300);
+if (dbError) throw new Error('Failed to save video URL: ' + dbError.message);
+
+console.log('[DEBUG] Database updated with video_url for message:', messageId);
+
+// 2. Optimistically update UI immediately
+setMessages(prev =>
+  prev.map(m => (m.id === messageId ? { ...m, video_url: publicUrl } : m))
+);
+
+// 3. Clear generation state + switch tab
+setGeneratingVideo(null);
+setVideoProgress('');
+setActiveTab('videos');
+
+// 4. Prevent auto-refresh from racing and overwriting our optimistic update
+setIsRefreshingAfterGeneration(true);
+
+// 5. Do a single, safe background refresh after React has committed
+setTimeout(async () => {
+  try {
+    console.log('[DEBUG] Post-generation background refresh...');
+    await fetchMessages(currentUser!.username); // ensure fresh list
+  } catch (err) {
+    console.error('Background refresh failed:', err);
+  } finally {
+    // Always release the cooldown
+    setIsRefreshingAfterGeneration(false);
+  }
+}, 1000); // 1 second is more than enough for local state + Supabase edge cache
+
+// 6. Notify user
+setTimeout(() => {
+  alert('Video generated successfully! Check the My Videos tab.');
+}, 300);
     } catch (error) {
       console.error('Video generation error:', error);
       alert('Failed to generate video: ' + error.message);
