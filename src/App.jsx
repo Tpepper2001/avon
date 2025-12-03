@@ -3,8 +3,8 @@ import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, 
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -55,19 +55,11 @@ export default function AnonymousVoiceApp() {
   }, []);
 
   const fetchMessages = async (user) => {
-    console.log(`[DEBUG] 🔄 Fetching messages for: ${user}`);
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('messages')
       .select('*')
       .eq('username', user)
       .order('created_at', { ascending: false });
-
-    if (error) {
-        console.error('[DEBUG] ❌ Error fetching messages:', error);
-    } else {
-        const videoCount = data?.filter(m => m.video_url).length || 0;
-        console.log(`[DEBUG] ✅ Messages fetched: ${data?.length} total, ${videoCount} with videos`);
-    }
 
     setMessages(data || []);
   };
@@ -346,9 +338,8 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-
+  // 'async' is here to prevent build errors
   const generateAvatarVideo = async (text, messageId) => {
-    console.log(`[DEBUG] 🎬 Starting generation for Message ID: ${messageId}`);
     setGeneratingVideo(messageId);
     setVideoProgress('Starting...');
     
@@ -471,7 +462,6 @@ export default function AnonymousVoiceApp() {
         if (e.data.size > 0) chunks.push(e.data);
       };
       
-      // We use a clean Promise here to handle the recording logic
       const videoBlob = await new Promise((resolve, reject) => {
         recorder.onstop = () => {
             const blob = new Blob(chunks, { type: 'video/webm' });
@@ -482,8 +472,6 @@ export default function AnonymousVoiceApp() {
         recorder.start();
         
         let frameIndex = 0;
-        
-        // Helper function to draw frames one by one
         const drawFrame = async () => {
           if (frameIndex >= frames.length) {
             recorder.stop();
@@ -491,14 +479,12 @@ export default function AnonymousVoiceApp() {
           }
           
           try {
-            // Check if createImageBitmap exists (browser)
             if (typeof createImageBitmap !== 'undefined') {
                 const img = await createImageBitmap(frames[frameIndex]);
                 ctx.drawImage(img, 0, 0);
                 frameIndex++;
-                setTimeout(drawFrame, 33); // approx 30fps
+                setTimeout(drawFrame, 33);
             } else {
-                // Fallback or error if not in browser environment
                 reject(new Error("createImageBitmap not supported in this environment"));
             }
           } catch (err) {
@@ -506,50 +492,35 @@ export default function AnonymousVoiceApp() {
             reject(err);
           }
         };
-        
         drawFrame();
       });
       
       setVideoProgress('Uploading...');
-      console.log(`[DEBUG] 💾 Video Blob size: ${videoBlob.size} bytes`);
       
       if (videoBlob.size === 0) {
           throw new Error("Generated video file is empty. Recorder failed.");
       }
 
       const fileName = `avatar-${messageId}-${Date.now()}.webm`;
-      console.log(`[DEBUG] ⬆️ Uploading to Supabase: ${fileName}`);
 
-      // This is where your error was: 'await' requires 'async' on the parent function
       const { error: uploadError } = await supabase.storage
         .from('voices')
         .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
       
-      if (uploadError) {
-          console.error('[DEBUG] ❌ Upload Error:', uploadError);
-          throw uploadError;
-      }
+      if (uploadError) throw uploadError;
       
       const { data: { publicUrl } } = supabase.storage
         .from('voices')
         .getPublicUrl(fileName);
       
-      console.log(`[DEBUG] 🔗 Public URL: ${publicUrl}`);
-
       // Update the database
-      console.log(`[DEBUG] 📝 Updating Database for ID: ${messageId}`);
       const { error: dbError } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
         .eq('id', messageId);
 
-      if (dbError) {
-          console.error('[DEBUG] ❌ Database Update Error:', dbError);
-          throw new Error('Database save failed: ' + dbError.message);
-      }
+      if (dbError) throw new Error('Database save failed: ' + dbError.message);
       
-      console.log('[DEBUG] ✅ Database Updated.');
-
       // 1. Optimistic update (fast)
       setMessages(prevMessages => 
         prevMessages.map(msg => 
@@ -559,7 +530,6 @@ export default function AnonymousVoiceApp() {
 
       // 2. Real refresh (reliable)
       if (currentUser) {
-          console.log('[DEBUG] 🔄 Force refreshing messages from DB...');
           await fetchMessages(currentUser.username);
       }
 
@@ -568,7 +538,7 @@ export default function AnonymousVoiceApp() {
       alert('Video uploaded! Switched to My Videos tab.');
       
     } catch (error) {
-      console.error('[DEBUG] ❌ CRITICAL FAILURE:', error);
+      console.error('Video generation error:', error);
       alert('Failed to generate video: ' + error.message);
     } finally {
       setGeneratingVideo(null);
@@ -1070,7 +1040,7 @@ export default function AnonymousVoiceApp() {
                               </a>
                            </div>
                            <p className="text-gray-700 text-sm line-clamp-2 italic">"{msg.text}"</p>
-                       </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1082,7 +1052,5 @@ export default function AnonymousVoiceApp() {
         </div>
       </div>
     </div>
-  );
-}
   );
 }
