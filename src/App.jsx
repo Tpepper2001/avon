@@ -196,56 +196,65 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- ROBUST VIDEO GENERATION (Real-Time Capture Fix) ---
-  const generateVideo = useCallback(async (msgId, audioUrl, text, voiceType) => {
+  // --- FIXED VIDEO GENERATION ---
+  const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
-    setGenState({ id: msgId, progress: 0, status: 'Loading Audio...' });
-  
+    setGenState({ id: msgId, progress: 0, status: 'Downloading Audio...' });
+    
+    let localAudioUrl = null;
+    let ctx = null;
+
     try {
-      // 1. Setup Audio Element (Bypasses decodeAudioData)
+      // 1. Fetch Blob (Bypass CORS)
+      const response = await fetch(remoteAudioUrl);
+      if (!response.ok) throw new Error("Failed to fetch audio file");
+      const audioBlob = await response.blob();
+      localAudioUrl = URL.createObjectURL(audioBlob);
+
+      // 2. Setup Audio Element
       const audio = new Audio();
-      audio.crossOrigin = "anonymous"; // Essential for Web Audio API
-      audio.src = audioUrl;
-      
+      audio.src = localAudioUrl;
+      // Do NOT set crossOrigin for blob URLs
+
       await new Promise((resolve, reject) => {
-        audio.oncanplaythrough = resolve;
-        audio.onerror = () => reject(new Error("Failed to load audio file."));
+         const timeout = setTimeout(() => reject(new Error("Audio load timed out")), 10000);
+         audio.oncanplay = () => { clearTimeout(timeout); resolve(); };
+         audio.onerror = (e) => {
+           clearTimeout(timeout);
+           console.error("Audio Error:", e, audio.error);
+           reject(new Error(`Audio load error: ${audio.error ? audio.error.code : 'unknown'}`));
+         };
       });
-  
-      // 2. Setup Audio Context
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+      // 3. Setup Context
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
       const source = ctx.createMediaElementSource(audio);
       const dest = ctx.createMediaStreamDestination();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       
-      // Voice Effects
+      // Effects
       const voiceConfig = VOICE_TYPES[voiceType.toUpperCase()] || VOICE_TYPES.ROBOT;
+      audio.playbackRate = voiceConfig.speed;
       
-      // Note: Pitch shifting via detune isn't supported on MediaElementSource directly in all browsers.
-      // We rely on playbackRate for speed/pitch combo as a safe fallback, or use a delay buffer for robotic FX.
-      audio.playbackRate = voiceConfig.speed; 
-      
-      // Gain (Volume)
       const gainNode = ctx.createGain();
       gainNode.gain.value = 2.0;
-  
-      // Connections
+
       source.connect(gainNode);
       gainNode.connect(analyser);
       gainNode.connect(dest);
-      // Connect to speakers so user can hear it while generating (optional, but good UX)
-      // gainNode.connect(ctx.destination); 
-  
-      // 3. Setup Canvas
+      // Optional: Connect to speakers
+      // gainNode.connect(ctx.destination);
+
+      // 4. Setup Canvas
       const width = 1080;
       const height = 1920;
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
       const canvasCtx = canvas.getContext('2d', { alpha: false });
-  
-      // 4. Setup Recorder
+      
+      // 5. Recorder
       const canvasStream = canvas.captureStream(30);
       const mixedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
@@ -259,91 +268,84 @@ export default function AnonymousVoiceApp() {
       
       const chunks = [];
       mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  
-      // 5. Start Generation Loop
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
       
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      // 6. Record Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
         
         mediaRecorder.start();
-        audio.play();
-        ctx.resume(); // Ensure context is running
-        
+        audio.play().catch(reject);
+        ctx.resume();
+
         const draw = () => {
-          if (audio.paused || audio.ended) {
-            mediaRecorder.stop();
-            return;
-          }
-  
-          // Get Audio Data for Lip Sync
-          analyser.getByteFrequencyData(dataArray);
-          const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
-          
-          // Draw Background
-          const grad = canvasCtx.createLinearGradient(0, 0, 0, height);
-          grad.addColorStop(0, '#0f172a');
-          grad.addColorStop(1, voiceConfig.color);
-          canvasCtx.fillStyle = grad;
-          canvasCtx.fillRect(0, 0, width, height);
-  
-          // Draw Avatar
-          const time = Date.now() / 1000;
-          canvasCtx.save();
-          canvasCtx.translate(width / 2, height / 2);
-          const bob = Math.sin(time * 3) * 15;
-          canvasCtx.translate(0, bob);
-  
-          // Head
-          canvasCtx.fillStyle = '#e2e8f0';
-          canvasCtx.beginPath();
-          canvasCtx.roundRect(-200, -200, 400, 400, 40);
-          canvasCtx.fill();
-  
-          // Eyes
-          const blink = Math.sin(time * 3) > 0.98 ? 5 : 60;
-          canvasCtx.fillStyle = voiceConfig.color;
-          canvasCtx.shadowBlur = 20; canvasCtx.shadowColor = voiceConfig.color;
-          canvasCtx.fillRect(-120, -50, 80, blink);
-          canvasCtx.fillRect(40, -50, 80, blink);
-          canvasCtx.shadowBlur = 0;
-  
-          // Mouth (Driven by Volume)
-          const mouthOpen = Math.max(10, volume * 3);
-          canvasCtx.fillStyle = '#1e293b';
-          canvasCtx.fillRect(-100, 100, 200, mouthOpen);
-  
-          canvasCtx.restore();
-  
-          // Text
-          canvasCtx.font = 'bold 60px sans-serif';
-          canvasCtx.fillStyle = 'rgba(255,255,255,0.8)';
-          canvasCtx.textAlign = 'center';
-          canvasCtx.fillText('ANON VOX', width / 2, 200);
-          
-          if (text) {
-             canvasCtx.font = '40px sans-serif';
-             canvasCtx.fillStyle = '#fff';
+           if (audio.paused || audio.ended) {
+              mediaRecorder.stop();
+              return;
+           }
+
+           // Lip Sync Logic
+           analyser.getByteFrequencyData(dataArray);
+           const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
+           
+           // Visuals
+           const grad = canvasCtx.createLinearGradient(0,0,0,height);
+           grad.addColorStop(0, '#0f172a');
+           grad.addColorStop(1, voiceConfig.color);
+           canvasCtx.fillStyle = grad;
+           canvasCtx.fillRect(0,0,width,height);
+
+           const t = Date.now()/1000;
+           canvasCtx.save();
+           canvasCtx.translate(width/2, height/2);
+           canvasCtx.translate(0, Math.sin(t*3)*15);
+
+           // Head
+           canvasCtx.fillStyle = '#e2e8f0';
+           canvasCtx.beginPath(); canvasCtx.roundRect(-200,-200,400,400,40); canvasCtx.fill();
+
+           // Eyes
+           canvasCtx.fillStyle = voiceConfig.color;
+           canvasCtx.shadowBlur=20; canvasCtx.shadowColor=voiceConfig.color;
+           const blink = Math.sin(t*2)>0.95?5:60;
+           canvasCtx.fillRect(-120,-50,80,blink);
+           canvasCtx.fillRect(40,-50,80,blink);
+           canvasCtx.shadowBlur=0;
+
+           // Mouth
+           const mouth = Math.max(10, avg*3);
+           canvasCtx.fillStyle = '#1e293b';
+           canvasCtx.fillRect(-100,100,200,mouth);
+           canvasCtx.restore();
+
+           // Text
+           canvasCtx.font='bold 60px sans-serif';
+           canvasCtx.fillStyle='rgba(255,255,255,0.8)';
+           canvasCtx.textAlign='center';
+           canvasCtx.fillText('ANON VOX', width/2, 200);
+
+           if (text) {
+             canvasCtx.font='40px sans-serif';
+             canvasCtx.fillStyle='#fff';
              const words = text.split(' ');
-             // Simple scrolling text simulation
-             const progress = audio.currentTime / audio.duration;
-             const idx = Math.floor(progress * words.length);
-             const sub = words.slice(Math.max(0, idx-2), idx+3).join(' ');
-             canvasCtx.fillText(sub || text.substring(0, 20) + '...', width/2, height - 300);
-          }
-  
-          setGenState({ id: msgId, progress: Math.round((audio.currentTime / audio.duration) * 100), status: 'Recording...' });
-          requestAnimationFrame(draw);
+             const p = audio.currentTime/audio.duration;
+             const i = Math.floor(p*words.length);
+             const sub = words.slice(Math.max(0,i-2), i+3).join(' ');
+             canvasCtx.fillText(sub||text.substring(0,25)+'...', width/2, height-300);
+           }
+
+           setGenState({ id: msgId, progress: Math.round((audio.currentTime/audio.duration)*100), status: 'Recording...' });
+           requestAnimationFrame(draw);
         };
         draw();
       });
-  
-      // 6. Upload
+
+      // 7. Upload
       setGenState({ id: msgId, progress: 100, status: 'Finalizing...' });
       const videoBlob = new Blob(chunks, { type: 'video/webm' });
       const fileName = `video-${msgId}-${Date.now()}.webm`;
-      
       const { error: upErr } = await supabase.storage.from('voices').upload(fileName, videoBlob);
       if (upErr) throw upErr;
       
@@ -351,13 +353,14 @@ export default function AnonymousVoiceApp() {
       await supabase.from('messages').update({ video_url: publicUrl }).eq('id', msgId);
       
       setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
-      ctx.close();
-      
+
     } catch (err) {
-      console.error(err);
-      setStatus({ ...status, error: 'Video gen failed: ' + err.message });
+       console.error(err);
+       setStatus({ ...status, error: 'Video failed: ' + err.message });
     } finally {
-      setGenState({ id: null, progress: 0, status: '' });
+       if (localAudioUrl) URL.revokeObjectURL(localAudioUrl);
+       if (ctx) ctx.close();
+       setGenState({ id: null, progress: 0, status: '' });
     }
   }, [genState.id]);
 
