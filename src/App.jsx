@@ -3,8 +3,8 @@ import { Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, Square, 
 import { createClient } from '@supabase/supabase-js';
 
 // Put your own keys here
-const supabaseUrl = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+const supabaseUrl = 'https://YOUR-PROJECT.supabase.co';
+const supabaseAnonKey = 'your-anon-key-here';
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -55,11 +55,19 @@ export default function AnonymousVoiceApp() {
   }, []);
 
   const fetchMessages = async (user) => {
-    const { data } = await supabase
+    console.log(`[DEBUG] 🔄 Fetching messages for: ${user}`);
+    const { data, error } = await supabase
       .from('messages')
       .select('*')
       .eq('username', user)
       .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error('[DEBUG] ❌ Error fetching messages:', error);
+    } else {
+        const videoCount = data?.filter(m => m.video_url).length || 0;
+        console.log(`[DEBUG] ✅ Messages fetched: ${data?.length} total, ${videoCount} with videos`);
+    }
 
     setMessages(data || []);
   };
@@ -338,13 +346,12 @@ export default function AnonymousVoiceApp() {
     }
   };
 
- const generateAvatarVideo = async (text, messageId) => {
+  const generateAvatarVideo = async (text, messageId) => {
+    console.log(`[DEBUG] 🎬 Starting generation for Message ID: ${messageId}`);
     setGeneratingVideo(messageId);
     setVideoProgress('Starting...');
     
     try {
-      console.log('Starting video generation for message:', messageId);
-      
       const canvas = document.createElement('canvas');
       canvas.width = 1080;
       canvas.height = 1080;
@@ -355,6 +362,102 @@ export default function AnonymousVoiceApp() {
       const totalFrames = Math.ceil(estimatedDuration * 30);
       
       setVideoProgress('Rendering 3D avatar...');
+      const frames = [];
+      
+      // --- VISUAL GENERATION LOOP ---
+      for (let frame = 0; frame < totalFrames; frame++) {
+        const time = frame / 30;
+        
+        const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
+        gradient.addColorStop(0, '#667eea');
+        gradient.addColorStop(1, '#764ba2');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 1080, 1080);
+        
+        ctx.save();
+        ctx.translate(540, 540);
+        
+        const bobOffset = Math.sin(time * 2) * 20;
+        ctx.translate(0, bobOffset);
+        
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+        ctx.shadowBlur = 30;
+        ctx.shadowOffsetX = 10;
+        ctx.shadowOffsetY = 10;
+        
+        ctx.fillStyle = '#c0c5ce';
+        ctx.fillRect(-200, -200, 400, 400);
+        
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#e0e5ee';
+        ctx.fillRect(-180, -180, 360, 360);
+        
+        const blinkPhase = Math.floor(time * 3) % 10;
+        const eyeHeight = blinkPhase === 0 ? 20 : 80;
+        
+        ctx.shadowColor = '#4a90e2';
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = '#4a90e2';
+        ctx.beginPath();
+        ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = '#2c5aa0';
+        ctx.beginPath();
+        ctx.ellipse(-80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        const mouthOpen = Math.abs(Math.sin(time * 10)) * 60 + 30;
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#2c3e50';
+        ctx.fillRect(-120, 80, 240, mouthOpen);
+        
+        ctx.fillStyle = '#95a5a6';
+        ctx.fillRect(-15, -250, 30, 60);
+        
+        const antennaPulse = Math.sin(time * 4) * 10 + 40;
+        ctx.shadowColor = '#e74c3c';
+        ctx.shadowBlur = 25;
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 3; i++) {
+          const waveRadius = 250 + i * 40 + Math.sin(time * 5 - i) * 20;
+          const waveAlpha = (Math.sin(time * 5 - i) + 1) / 4;
+          ctx.strokeStyle = `rgba(255, 255, 255, ${waveAlpha})`;
+          ctx.beginPath();
+          ctx.arc(0, 0, waveRadius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        
+        ctx.restore();
+        
+        await new Promise(resolve => {
+          canvas.toBlob(blob => {
+            frames.push(blob);
+            resolve();
+          }, 'image/jpeg', 0.8);
+        });
+        
+        if (frame % 10 === 0) {
+          setVideoProgress(`Frame ${frame}/${totalFrames}`);
+        }
+      }
+      // --- END VISUAL GENERATION ---
+      
+      setVideoProgress('Compiling video...');
       
       const stream = canvas.captureStream(30);
       const chunks = [];
@@ -363,273 +466,94 @@ export default function AnonymousVoiceApp() {
         videoBitsPerSecond: 2500000
       });
       
-      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
       
-      const videoBlob = await new Promise((resolve) => {
+      const videoBlob = await new Promise(resolve => {
         recorder.onstop = () => {
-          console.log('Recording stopped, chunks:', chunks.length);
-          resolve(new Blob(chunks, { type: 'video/webm' }));
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          resolve(blob);
         };
         
         recorder.start();
-        console.log('Recording started');
+        
+        // IMPORTANT: We are essentially recording a silent video here
+        // because we cannot capture SpeechSynthesis audio easily.
+        // We simulate the time it takes to speak.
         
         let frameIndex = 0;
         const drawFrame = () => {
-          if (frameIndex < totalFrames) {
-            const time = frameIndex / 30;
-            
-            // Clear and draw background gradient
-            const gradient = ctx.createLinearGradient(0, 0, 0, 1080);
-            gradient.addColorStop(0, '#667eea');
-            gradient.addColorStop(1, '#764ba2');
-            ctx.fillStyle = gradient;
-            ctx.fillRect(0, 0, 1080, 1080);
-            
-            ctx.save();
-            ctx.translate(540, 540);
-            
-            const bobOffset = Math.sin(time * 2) * 20;
-            ctx.translate(0, bobOffset);
-            
-            // Robot head shadow
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-            ctx.shadowBlur = 30;
-            ctx.shadowOffsetX = 10;
-            ctx.shadowOffsetY = 10;
-            
-            // Robot head
-            ctx.fillStyle = '#c0c5ce';
-            ctx.fillRect(-200, -200, 400, 400);
-            
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = '#e0e5ee';
-            ctx.fillRect(-180, -180, 360, 360);
-            
-            // Eyes with blink
-            const blinkPhase = Math.floor(time * 3) % 10;
-            const eyeHeight = blinkPhase === 0 ? 20 : 80;
-            
-            ctx.shadowColor = '#4a90e2';
-            ctx.shadowBlur = 20;
-            ctx.fillStyle = '#4a90e2';
-            ctx.beginPath();
-            ctx.ellipse(-80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(80, -50, 50, eyeHeight / 2, 0, 0, Math.PI * 2);
-            ctx.fill();
-            
-            // Pupils
-            ctx.fillStyle = '#2c5aa0';
-            ctx.beginPath();
-            ctx.ellipse(-80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(80, -50, 25, eyeHeight / 3, 0, 0, Math.PI * 2);
-            ctx.fill();
-            
-            // Animated mouth
-            const mouthOpen = Math.abs(Math.sin(time * 10)) * 60 + 30;
-            ctx.shadowColor = '#000';
-            ctx.shadowBlur = 10;
-            ctx.fillStyle = '#2c3e50';
-            ctx.fillRect(-120, 80, 240, mouthOpen);
-            
-            // Antenna
-            ctx.fillStyle = '#95a5a6';
-            ctx.fillRect(-15, -250, 30, 60);
-            
-            // Antenna light
-            const antennaPulse = Math.sin(time * 4) * 10 + 40;
-            ctx.shadowColor = '#e74c3c';
-            ctx.shadowBlur = 25;
-            ctx.fillStyle = '#e74c3c';
-            ctx.beginPath();
-            ctx.arc(0, -260, antennaPulse, 0, Math.PI * 2);
-            ctx.fill();
-            
-            // Sound waves
-            ctx.shadowBlur = 0;
-            ctx.lineWidth = 3;
-            for (let i = 0; i < 3; i++) {
-              const waveRadius = 250 + i * 40 + Math.sin(time * 5 - i) * 20;
-              const waveAlpha = (Math.sin(time * 5 - i) + 1) / 4;
-              ctx.strokeStyle = `rgba(255, 255, 255, ${waveAlpha})`;
-              ctx.beginPath();
-              ctx.arc(0, 0, waveRadius, 0, Math.PI * 2);
-              ctx.stroke();
-            }
-            
-            ctx.restore();
-            
-            frameIndex++;
-            if (frameIndex % 30 === 0) {
-              setVideoProgress(`Rendering: ${Math.floor(frameIndex / totalFrames * 100)}%`);
-            }
-            requestAnimationFrame(drawFrame);
+          if (frameIndex < frames.length) {
+            createImageBitmap(frames[frameIndex]).then(img => {
+              ctx.drawImage(img, 0, 0);
+              frameIndex++;
+              setTimeout(drawFrame, 1000 / 30);
+            });
           } else {
-            console.log('All frames drawn, stopping recorder');
-            setTimeout(() => recorder.stop(), 500);
+             recorder.stop();
           }
         };
-        
-        // Start speech synthesis
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.7;
-        utterance.pitch = 0.3;
-        utterance.volume = 1.0;
-        
-        utterance.onstart = () => {
-          console.log('Speech started');
-          drawFrame();
-        };
-        
-        window.speechSynthesis.speak(utterance);
+        drawFrame();
       });
       
-      console.log('Video blob created, size:', videoBlob.size);
       setVideoProgress('Uploading...');
+      console.log(`[DEBUG] 💾 Video Blob size: ${videoBlob.size} bytes`);
       
-      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
-      console.log('Uploading to storage:', fileName);
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('voices')
-        .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
-      
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        throw uploadError;
+      if (videoBlob.size === 0) {
+          throw new Error("Generated video file is empty. Recorder failed.");
       }
-      
-      console.log('Upload successful:', uploadData);
-      
-      const { data: { publicUrl } } = supabase.storage
-        .from('voices')
-        .getPublicUrl(fileName);
-      
-      console.log('Public URL:', publicUrl);
-      
-      // Update the database
-      const { data: updateData, error: dbError } = await supabase
-        .from('messages')
-        .update({ video_url: publicUrl })
-        .eq('id', messageId)
-        .select();
 
-      if (dbError) {
-        console.error('Database update error:', dbError);
-        throw new Error('Database save failed: ' + dbError.message);
-      }
-      
-      console.log('Database updated:', updateData);
-      
-      // Force refresh messages from database
-      console.log('Fetching fresh messages...');
-      await fetchMessages(currentUser.username);
-      
-      setVideoProgress('');
-      setGeneratingVideo(null);
-      alert('✅ Video generated successfully! Check the "My Videos" tab.');
-      
-    } catch (error) {
-      console.error('Video generation error:', error);
-      alert('Failed to generate video: ' + error.message);
-      setGeneratingVideo(null);
-      setVideoProgress('');
-    }
-  };
-      
       const fileName = `avatar-${messageId}-${Date.now()}.webm`;
-      console.log('Uploading to storage:', fileName);
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('voices')
-        .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
-      
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        throw uploadError;
-      }
-      
-      console.log('Upload successful:', uploadData);
-      
-      const { data: { publicUrl } } = supabase.storage
-        .from('voices')
-        .getPublicUrl(fileName);
-      
-      console.log('Public URL:', publicUrl);
-      
-      // Update the database
-      const { data: updateData, error: dbError } = await supabase
-        .from('messages')
-        .update({ video_url: publicUrl })
-        .eq('id', messageId)
-        .select();
+      console.log(`[DEBUG] ⬆️ Uploading to Supabase: ${fileName}`);
 
-      if (dbError) {
-        console.error('Database update error:', dbError);
-        throw new Error('Database save failed: ' + dbError.message);
-      }
-      
-      console.log('Database updated:', updateData);
-      
-      // Force refresh messages from database
-      console.log('Fetching fresh messages...');
-      await fetchMessages(currentUser.username);
-      
-      setVideoProgress('');
-      setGeneratingVideo(null);
-      alert('✅ Video generated successfully! Check the "My Videos" tab.');
-      
-    } catch (error) {
-      console.error('Video generation error:', error);
-      alert('Failed to generate video: ' + error.message);
-      setGeneratingVideo(null);
-      setVideoProgress('');
-    }
-  };
-      
-      setVideoProgress('Uploading...');
-      
-      const fileName = `avatar-${messageId}-${Date.now()}.webm`;
       const { error: uploadError } = await supabase.storage
         .from('voices')
         .upload(fileName, videoBlob, { contentType: 'video/webm', upsert: false });
       
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+          console.error('[DEBUG] ❌ Upload Error:', uploadError);
+          throw uploadError;
+      }
       
       const { data: { publicUrl } } = supabase.storage
         .from('voices')
         .getPublicUrl(fileName);
       
+      console.log(`[DEBUG] 🔗 Public URL: ${publicUrl}`);
+
       // Update the database
-   // Update the database
-const { error: dbError } = await supabase
-  .from('messages')
-  .update({ video_url: publicUrl })
-  .eq('id', messageId);
+      console.log(`[DEBUG] 📝 Updating Database for ID: ${messageId}`);
+      const { error: dbError } = await supabase
+        .from('messages')
+        .update({ video_url: publicUrl })
+        .eq('id', messageId);
 
-if (dbError) throw new Error('Database save failed: ' + dbError.message);
-
-// Fetch fresh messages from database
-await fetchMessages(currentUser.username);
-
-setVideoProgress('');
-setGeneratingVideo(null);
-alert('Video generated! Check the "My Videos" tab.');
-
-      // Also try to fetch fresh from DB
-      if (currentUser) {
-        fetchMessages(currentUser.username);
+      if (dbError) {
+          console.error('[DEBUG] ❌ Database Update Error:', dbError);
+          throw new Error('Database save failed: ' + dbError.message);
       }
       
+      console.log('[DEBUG] ✅ Database Updated.');
+
+      // --- CRITICAL FIX: Fetch fresh data AND update local state ---
+      // 1. Optimistic update (fast)
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...msg, video_url: publicUrl } : msg
+        )
+      );
+
+      // 2. Real refresh (reliable)
+      console.log('[DEBUG] 🔄 Force refreshing messages from DB...');
+      await fetchMessages(currentUser.username);
+
       setVideoProgress('');
-      alert('Video uploaded to My Videos! Check the tab.');
+      setActiveTab('videos'); // Auto-switch tab
+      alert('Video uploaded! Switched to My Videos tab.');
       
     } catch (error) {
-      console.error('Video generation error:', error);
+      console.error('[DEBUG] ❌ CRITICAL FAILURE:', error);
       alert('Failed to generate video: ' + error.message);
     } finally {
       setGeneratingVideo(null);
