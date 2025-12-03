@@ -1070,7 +1070,7 @@ export default function AnonymousVoiceApp() {
                               </a>
                            </div>
                            <p className="text-gray-700 text-sm line-clamp-2 italic">"{msg.text}"</p>
-                        </div>
+                       </div>
                       </div>
                     ))}
                   </div>
@@ -1082,6 +1082,8 @@ export default function AnonymousVoiceApp() {
         </div>
       </div>
     </div>
+  );
+}
   );
 }
 ```
