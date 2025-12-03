@@ -135,7 +135,7 @@ export default function AnonymousVoiceApp() {
 
   const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); setMessages([]); };
 
-  // --- FIXED RECORDING LOGIC ---
+  // --- BULLETPROOF RECORDING LOGIC ---
   const startRecording = async () => {
     setStatus({ ...status, error: null });
     try {
@@ -143,23 +143,31 @@ export default function AnonymousVoiceApp() {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       streamRef.current = stream;
 
-      // Force webm for better compatibility across browsers/ffmpeg
-      const mimeType = 'audio/webm';
-      const recorder = new MediaRecorder(stream, { mimeType });
+      // Try multiple MIME types for maximum compatibility
+      const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+      let selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
+      
+      const recorder = new MediaRecorder(stream, { mimeType: selectedMime });
       mediaRecorderRef.current = recorder;
       audioChunksRef.current = [];
 
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       
       recorder.onstop = () => {
-        // Create the blob ONLY when stopped to ensure headers are correct
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const blob = new Blob(audioChunksRef.current, { type: selectedMime || 'audio/webm' });
+        
+        // Validate blob has content (prevent empty files)
+        if (blob.size < 1000) {
+          setStatus({ ...status, error: 'Recording too short or invalid' });
+          return;
+        }
+        
         setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
         stream.getTracks().forEach(t => t.stop());
       };
 
-      // REMOVED TIMESLICE: This fixes the "DEMUXER_ERROR" by ensuring a single continuous file header
-      recorder.start(); 
+      // USE 1 SECOND TIMESLICE: Stable, prevents memory issues, keeps header reasonably mostly correct
+      recorder.start(1000); 
       
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
@@ -188,10 +196,14 @@ export default function AnonymousVoiceApp() {
     if (!recordingState.blob) return;
     setStatus({ loading: true, error: null });
     try {
-      const fileName = `voice-${Date.now()}.webm`; // Standardize extension
+      const ext = recordingState.blob.type.includes('mp4') ? 'mp4' : 'webm';
+      const fileName = `voice-${Date.now()}.${ext}`;
+      
       const { error: upErr } = await supabase.storage
           .from('voices')
-          .upload(fileName, recordingState.blob, { contentType: 'audio/webm' }); // Explicit MIME
+          .upload(fileName, recordingState.blob, { 
+             contentType: recordingState.blob.type 
+          });
           
       if (upErr) throw upErr;
       
@@ -206,7 +218,7 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- ROBUST VIDEO GENERATION ---
+  // --- VIDEO GENERATION ---
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
     setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
@@ -268,7 +280,7 @@ export default function AnonymousVoiceApp() {
       
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const fps = 30;
-      const duration = audioBuffer.duration / voiceConfig.speed; // Adjust for playback rate
+      const duration = audioBuffer.duration / voiceConfig.speed;
       
       // 6. Real-time Record Loop
       await new Promise((resolve, reject) => {
