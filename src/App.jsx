@@ -47,6 +47,7 @@ export default function AnonymousVoiceApp() {
   const [messages, setMessages] = useState([]);
   const [referralCount, setReferralCount] = useState(0);
   const [genState, setGenState] = useState({ id: null, progress: 0, status: '' });
+  const [sharingId, setSharingId] = useState(null); // New state to track which video is sharing
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
@@ -116,6 +117,48 @@ export default function AnonymousVoiceApp() {
     }
   };
 
+  // --- NEW FUNCTION: NATIVE SHARE ---
+  const handleNativeShare = async (videoUrl, msgId) => {
+    if (!navigator.share) {
+      alert("Sharing is not supported on this browser.");
+      return;
+    }
+
+    setSharingId(msgId);
+    
+    try {
+      // 1. Fetch the file as a blob
+      const response = await fetch(videoUrl);
+      const blob = await response.blob();
+      
+      // 2. Create a File object (needed for navigator.share)
+      const file = new File([blob], `anonvox-${msgId}.webm`, { type: 'video/webm' });
+
+      // 3. Check if the device allows sharing files
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: 'AnonVox Message',
+          text: 'Check out this anonymous voice message video! 🤖',
+        });
+      } else {
+        // Fallback: Share just the URL if files aren't supported
+        await navigator.share({
+          title: 'AnonVox Message',
+          text: 'Check out this anonymous voice message video!',
+          url: videoUrl
+        });
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        console.error('Error sharing:', error);
+        alert("Could not share the file. Try downloading it instead.");
+      }
+    } finally {
+      setSharingId(null);
+    }
+  };
+
   const fetchMessages = useCallback(async (username) => {
     try {
       const { data, error } = await supabase
@@ -126,13 +169,8 @@ export default function AnonymousVoiceApp() {
 
       if (error) throw error;
       
-      // Filter logic: Optional 24hr expiry (If you want to hide old ones)
-      // const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      // const freshMessages = data.filter(m => new Date(m.created_at) > oneDayAgo);
-
       if (data) {
         setMessages(prev => {
-          // Smart Merge to stop flickering
           const merged = data.map(remoteMsg => {
             const localMsg = prev.find(p => p.id === remoteMsg.id);
             if (localMsg?.video_url && !remoteMsg.video_url) {
@@ -259,16 +297,13 @@ export default function AnonymousVoiceApp() {
     let ctx = null;
 
     try {
-      // 1. Fetch
       const response = await fetch(remoteAudioUrl);
       if (!response.ok) throw new Error("Failed to fetch audio file");
       const audioBufferData = await response.arrayBuffer();
 
-      // 2. Decode
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await ctx.decodeAudioData(audioBufferData);
 
-      // 3. Setup Graph
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       const dest = ctx.createMediaStreamDestination();
@@ -286,7 +321,6 @@ export default function AnonymousVoiceApp() {
       gainNode.connect(analyser);
       gainNode.connect(dest);
 
-      // 4. Setup Canvas
       const width = 1080;
       const height = 1920;
       const canvas = document.createElement('canvas');
@@ -294,7 +328,6 @@ export default function AnonymousVoiceApp() {
       canvas.height = height;
       const canvasCtx = canvas.getContext('2d', { alpha: false });
       
-      // 5. Recorder
       const canvasStream = canvas.captureStream(30);
       const mixedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
@@ -312,7 +345,6 @@ export default function AnonymousVoiceApp() {
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const duration = audioBuffer.duration / voiceConfig.speed;
       
-      // 6. Record Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
@@ -377,7 +409,6 @@ export default function AnonymousVoiceApp() {
         draw();
       });
 
-      // 7. Upload & DB Update
       setGenState({ id: msgId, progress: 100, status: 'Finalizing...' });
       const videoBlob = new Blob(chunks, { type: 'video/webm' });
       const fileName = `video-${msgId}-${Date.now()}.webm`;
@@ -387,7 +418,6 @@ export default function AnonymousVoiceApp() {
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
       
-      // CRITICAL FIX: Ensure the update actually happened by selecting the returned row
       const { data: updatedData, error: dbErr } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -396,7 +426,6 @@ export default function AnonymousVoiceApp() {
       
       if (dbErr || !updatedData || updatedData.length === 0) {
         console.error("DB Update Failed", dbErr);
-        // Alert the user if the permission check fails
         alert("Video generated! But we couldn't save it to your history. Please check your Database Permissions (Row Level Security).");
       }
       
@@ -520,8 +549,18 @@ export default function AnonymousVoiceApp() {
                        <div className="flex flex-col gap-4">
                            <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
                            
-                           {/* SHARE & DOWNLOAD ACTIONS */}
+                           {/* UPDATED: SHARE & DOWNLOAD ACTIONS */}
                            <div className="grid grid-cols-2 gap-2">
+                             {/* Native Share Button */}
+                             <button 
+                               onClick={() => handleNativeShare(msg.video_url, msg.id)} 
+                               disabled={sharingId === msg.id}
+                               className="col-span-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 shadow-md hover:scale-[1.02] transition"
+                             >
+                               {sharingId === msg.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Share2 className="w-4 h-4"/>}
+                               {sharingId === msg.id ? 'Preparing...' : 'Share Video Directly'}
+                             </button>
+
                              <button onClick={() => handleDownload(msg.video_url, `anonvox-${msg.id}.webm`)} className="bg-gray-100 text-gray-800 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-200">
                                <Download className="w-3 h-3"/> Download
                              </button>
@@ -530,11 +569,6 @@ export default function AnonymousVoiceApp() {
                                 alert("Video saved! Open TikTok and upload the file.");
                              }} className="bg-black text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-800">
                                <Music2 className="w-3 h-3"/> TikTok
-                             </button>
-                             <button onClick={() => {
-                                window.open(`https://wa.me/?text=${encodeURIComponent("Check out this voice message I got! 🤖 " + msg.video_url)}`, '_blank');
-                             }} className="col-span-2 bg-green-500 text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-green-600">
-                               <MessageCircle className="w-3 h-3"/> Share on WhatsApp
                              </button>
                            </div>
                        </div>
