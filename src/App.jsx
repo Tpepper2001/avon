@@ -19,18 +19,19 @@ const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b';
 // 🔴 2. PASTE VOICE RSS KEY HERE (Get free at voicerss.org) 🔴
 const VOICERSS_KEY = '747fd61f3e264f42b52bcd332823661e'; 
 
+// 🤖 STATIC ROBOT IMAGE URL (Hosted image or base64)
+const ROBOT_IMAGE_URL = "https://images.unsplash.com/photo-1535378437323-9528869de713?q=80&w=720&auto=format&fit=crop";
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_RECORDING_TIME = 120; 
 const REFRESH_INTERVAL = 10000;
 
-// Mobile-friendly audio constraints
 const AUDIO_CONSTRAINTS = {
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
-    sampleRate: 44100, // Standard sample rate
   }
 };
 
@@ -141,9 +142,8 @@ export default function AnonymousVoiceApp() {
       setPipeline({ active: true, step: 'voice', progress: 40, error: null });
       const ttsBlob = await generateVoiceRSSTTS(text);
       
-      // 3. GENERATING VIDEO (Mobile-Robust Version)
+      // 3. GENERATING VIDEO (Static Image + Audio)
       setPipeline({ active: true, step: 'video', progress: 70, error: null });
-      // We pass the raw recorded blob just for duration reference if needed, but we use ttsBlob for audio
       const videoBlob = await generateVideoBlob(ttsBlob, text);
 
       // 4. UPLOADING
@@ -219,57 +219,71 @@ export default function AnonymousVoiceApp() {
     });
 
     if (!response.ok) throw new Error("VoiceRSS API Failed");
-    
     return await response.blob();
   };
 
-  // --- STEP 3: VIDEO GENERATION (MOBILE ROBUST) ---
+  // --- STEP 3: VIDEO GENERATION (STATIC IMAGE + AUDIO) ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
+      let canvas = null;
+      let ctx = null;
+      let recorder = null;
+
       try {
+        // A. Load Image First
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = ROBOT_IMAGE_URL;
+        await new Promise((res, rej) => {
+            img.onload = res;
+            img.onerror = rej;
+        });
+
+        // B. Setup Audio Context (Aggressive Resume)
         const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AudioContext();
+        ctx = new AudioContext();
         
-        // 1. MOBILE FIX: Resume AudioContext (must be triggered by the user click that called this)
-        if (ctx.state === 'suspended') {
-            await ctx.resume();
-        }
+        if (ctx.state === 'suspended') await ctx.resume();
 
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
 
         const source = ctx.createBufferSource();
-        source.buffer = audioBufferData;
+        source.buffer = audioBufferData; 
         
         const dest = ctx.createMediaStreamDestination();
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 256;
+        source.connect(dest);
+        
+        // Optional: Connect to speakers so user can hear it being made
+        // source.connect(ctx.destination); 
 
-        source.connect(analyser);
-        source.connect(dest); 
-
-        // 2. MOBILE FIX: Use compatible canvas dimensions
+        // C. Setup Canvas & DOM Attachment
         const width = 360; 
-        const height = 640;
-        const canvas = document.createElement('canvas');
+        const height = 640; 
+        canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
+        
+        // --- MOBILE FIX: Canvas must be in DOM for iOS ---
+        Object.assign(canvas.style, {
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            opacity: '0.01',
+            pointerEvents: 'none',
+            zIndex: '-1'
+        });
+        document.body.appendChild(canvas);
+
         const canvasCtx = canvas.getContext('2d', { alpha: false });
 
-        // 3. MOBILE FIX: Draw INITIAL frame before recording starts
-        // This prevents the "Black Screen / 0s" issue on iOS
-        canvasCtx.fillStyle = '#000000';
-        canvasCtx.fillRect(0,0,width,height);
-        
-        const stream = canvas.captureStream(30);
-        
-        // Combine audio and video tracks
+        // D. Setup Recorder
+        const stream = canvas.captureStream(30); // 30 FPS
         const combinedStream = new MediaStream([
             ...stream.getVideoTracks(),
             ...dest.stream.getAudioTracks()
         ]);
         
-        // 4. MOBILE FIX: Aggressive MIME type checking
         const mimeTypes = [
             'video/mp4',
             'video/webm;codecs=h264',
@@ -278,95 +292,84 @@ export default function AnonymousVoiceApp() {
         ];
         const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
 
-        const recorder = new MediaRecorder(combinedStream, { 
+        if (!selectedMime) throw new Error("No supported video MIME type found");
+
+        recorder = new MediaRecorder(combinedStream, { 
             mimeType: selectedMime,
-            videoBitsPerSecond: 1500000 // Lower bitrate for mobile stability
+            videoBitsPerSecond: 1500000 
         });
         
         const chunks = [];
         recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
         
         recorder.onstop = () => {
-           const blob = new Blob(chunks, { type: selectedMime });
+           const finalBlob = new Blob(chunks, { type: selectedMime });
+           if(document.body.contains(canvas)) document.body.removeChild(canvas);
            ctx.close();
-           resolve(blob);
+           resolve(finalBlob);
         };
 
-        // 5. MOBILE FIX: Start recording with small timeslice to force chunk creation
+        // E. Start Recording & Audio
         recorder.start(100); 
+        await new Promise(r => setTimeout(r, 100)); // Buffer
         source.start(0);
 
+        // F. Animation Loop (Just drawing the image + text repeatedly)
         const duration = audioBufferData.duration;
         const startTime = ctx.currentTime;
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
         const draw = () => {
-          if (ctx.state === 'closed') return;
+          if (!ctx || ctx.state === 'closed') return;
           const elapsed = ctx.currentTime - startTime;
           
-          // Add 0.5s buffer
           if (elapsed >= duration + 0.5) {
             if (recorder.state !== 'inactive') recorder.stop();
             return;
           }
 
-          analyser.getByteFrequencyData(dataArray);
-          const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
+          // 1. Draw Image (Cover style)
+          // Calculate scale to cover
+          const scale = Math.max(width / img.width, height / img.height);
+          const x = (width / 2) - (img.width / 2) * scale;
+          const y = (height / 2) - (img.height / 2) * scale;
+          canvasCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
 
-          // Draw Visuals
-          const grad = canvasCtx.createLinearGradient(0,0,0,height);
-          grad.addColorStop(0, '#000000');
-          grad.addColorStop(1, '#16a34a'); // Green theme 
+          // 2. Add Dark Overlay for text readability
+          const grad = canvasCtx.createLinearGradient(0, height/2, 0, height);
+          grad.addColorStop(0, 'rgba(0,0,0,0)');
+          grad.addColorStop(1, 'rgba(0,0,0,0.9)');
           canvasCtx.fillStyle = grad;
-          canvasCtx.fillRect(0,0,width,height);
+          canvasCtx.fillRect(0, 0, width, height);
 
-          const t = Date.now()/1000;
-          canvasCtx.save();
-          canvasCtx.translate(width/2, height/2);
-          
-          // Robot Head
-          canvasCtx.fillStyle = '#e2e8f0';
-          canvasCtx.beginPath(); canvasCtx.roundRect(-75,-75,150,150,15); canvasCtx.fill();
-
-          // Eyes
-          canvasCtx.fillStyle = '#1e293b';
-          canvasCtx.fillRect(-50, -25, 100, 30);
-          
-          // Glowing Eye Bar
-          canvasCtx.fillStyle = '#ef4444'; // Red eye
-          canvasCtx.shadowBlur = 10;
-          canvasCtx.shadowColor = '#ef4444';
-          const eyeWidth = 90 * Math.abs(Math.sin(t * 3)); 
-          canvasCtx.fillRect(-eyeWidth/2, -20, eyeWidth, 20);
-          canvasCtx.shadowBlur = 0;
-
-          // Mouth (Spectrum)
-          canvasCtx.fillStyle = '#334155';
-          const mouthOpen = Math.max(2, avg * 0.8);
-          canvasCtx.fillRect(-40, 40, 80, mouthOpen);
-
-          canvasCtx.restore();
-
-          // Subtitles
+          // 3. Add Text Overlay (Subtitles)
           if (text) {
-             canvasCtx.font='bold 16px sans-serif';
+             canvasCtx.font='bold 20px sans-serif';
              canvasCtx.fillStyle='#fff';
              canvasCtx.textAlign = 'center';
+             canvasCtx.shadowColor="black";
+             canvasCtx.shadowBlur=4;
+
              const words = text.split(' ');
              const p = elapsed / duration;
              const idx = Math.floor(p * words.length);
              const segment = words.slice(Math.max(0, idx-3), idx+4).join(' ');
              
-             canvasCtx.shadowColor="black";
-             canvasCtx.shadowBlur=2;
-             canvasCtx.fillText(segment, width/2, height - 100);
+             canvasCtx.fillText(segment, width/2, height - 150);
              canvasCtx.shadowBlur=0;
           }
+          
+          // 4. Branding
+          canvasCtx.font='bold 24px monospace';
+          canvasCtx.fillStyle='#667eea';
+          canvasCtx.fillText("ANON VOX", width/2, 50);
 
           requestAnimationFrame(draw);
         };
         draw();
+
       } catch (err) {
+        if(canvas && document.body.contains(canvas)) document.body.removeChild(canvas);
+        if(ctx) ctx.close();
         reject("Video Gen Error: " + err.message);
       }
     });
