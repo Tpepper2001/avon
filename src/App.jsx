@@ -117,48 +117,70 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- FIXED: NATIVE SHARE (Exclusive File Sharing) ---
+ // --- DIRECT VIDEO FILE SHARING (Browser Optimized) ---
   const handleNativeShare = async (videoUrl, msgId) => {
-    if (!navigator.share) {
-      alert("Sharing not supported. Downloading instead.");
-      handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
-      return;
-    }
-
     setSharingId(msgId);
     
     try {
-      // 1. Fetch file
+      // Fetch the video file first
       const response = await fetch(videoUrl);
+      if (!response.ok) throw new Error('Failed to fetch video');
+      
       const blob = await response.blob();
       
-      // 2. Determine type (MP4 preferred for sharing)
-      const type = blob.type.includes('mp4') ? 'video/mp4' : 'video/webm';
-      const ext = type === 'video/mp4' ? 'mp4' : 'webm';
-      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type });
+      // Force MP4 MIME type for maximum compatibility
+      const mimeType = 'video/mp4';
+      const fileName = `anonvox-${msgId}.mp4`;
+      const videoFile = new File([blob], fileName, { type: mimeType });
 
-      // 3. Define Share Data - ONLY FILES, NO TEXT
-      // Adding text often causes WhatsApp/iOS to ignore the file and send the text instead.
-      const shareData = {
-        files: [file]
-      };
+      // Try Web Share API with the actual video file
+      if (navigator.share) {
+        const shareData = {
+          files: [videoFile],
+          title: 'AnonVox',
+          text: 'Anonymous voice message 🎤'
+        };
 
-      // 4. Validate & Share
-      if (navigator.canShare && navigator.canShare(shareData)) {
-        await navigator.share(shareData);
-      } else {
-        // Strict Fallback: Do NOT share text if file fails. Download it.
-        alert("This app cannot share this video format directly. Downloading file instead...");
-        handleDownload(videoUrl, `anonvox-${msgId}.${ext}`);
-      }
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        console.error('Share failed:', error);
-        // Don't alert if user just cancelled the share sheet
-        if (error.name !== 'NotAllowedError') {
-             alert("Share failed. Downloading instead.");
-             handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
+        // Check if sharing this file is supported
+        if (navigator.canShare && navigator.canShare(shareData)) {
+          await navigator.share(shareData);
+          return; // Successfully shared the video file!
         }
+        
+        // If file sharing not supported, try without files
+        if (navigator.canShare({ text: shareData.text, url: videoUrl })) {
+          await navigator.share({
+            title: shareData.title,
+            text: shareData.text,
+            url: videoUrl
+          });
+          return;
+        }
+      }
+
+      // Fallback: Download the file
+      // Create a download link
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      
+      alert("✅ Video downloaded! You can now share it from your device.");
+      
+    } catch (error) {
+      console.error('Share error:', error);
+      
+      // Don't show error if user cancelled
+      if (error.name === 'AbortError') return;
+      
+      // For other errors, suggest download
+      if (error.name !== 'NotAllowedError') {
+        alert("⚠️ Direct sharing failed. Downloading video instead...");
+        handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       }
     } finally {
       setSharingId(null);
