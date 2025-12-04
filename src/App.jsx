@@ -14,12 +14,12 @@ const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
 // 🔴 1. PASTE ASSEMBLY AI KEY HERE 🔴
-const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
+const ASSEMBLY_KEY = ''; 
 
 // 🔴 2. PASTE VOICE RSS KEY HERE (Get free at voicerss.org) 🔴
-const VOICERSS_KEY = '747fd61f3e264f42b52bcd332823661e'; 
+const VOICERSS_KEY = ''; 
 
-// 🤖 STATIC ROBOT IMAGE URL (Hosted image or base64)
+// 🤖 STATIC ROBOT IMAGE URL
 const ROBOT_IMAGE_URL = "https://images.unsplash.com/photo-1535378437323-9528869de713?q=80&w=720&auto=format&fit=crop";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -136,8 +136,7 @@ export default function AnonymousVoiceApp() {
       // 1. TRANSCRIBING (AssemblyAI)
       const text = await performTranscription(recordingState.rawBlob);
       if (!text || text.trim().length === 0) throw new Error("Could not understand audio. Try speaking clearer.");
-      console.log("Transcribed Text:", text);
-
+      
       // 2. GENERATING VOICE (VoiceRSS)
       setPipeline({ active: true, step: 'voice', progress: 40, error: null });
       const ttsBlob = await generateVoiceRSSTTS(text);
@@ -146,7 +145,7 @@ export default function AnonymousVoiceApp() {
       setPipeline({ active: true, step: 'video', progress: 70, error: null });
       const videoBlob = await generateVideoBlob(ttsBlob, text);
 
-      // 4. UPLOADING
+      // 4. UPLOADING (Force .mp4 extension)
       setPipeline({ active: true, step: 'sending', progress: 90, error: null });
       const publicUrl = await uploadVideo(videoBlob);
       
@@ -167,7 +166,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- STEP 1: TRANSCRIPTION (AssemblyAI) ---
+  // --- STEP 1: TRANSCRIPTION ---
   const performTranscription = async (blob) => {
     try {
       const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
@@ -200,7 +199,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- STEP 2: GENERATE TTS (VoiceRSS) ---
+  // --- STEP 2: GENERATE TTS ---
   const generateVoiceRSSTTS = async (text) => {
     if (!VOICERSS_KEY) throw new Error("Missing VoiceRSS Key");
 
@@ -222,7 +221,7 @@ export default function AnonymousVoiceApp() {
     return await response.blob();
   };
 
-  // --- STEP 3: VIDEO GENERATION (STATIC IMAGE + AUDIO) ---
+  // --- STEP 3: VIDEO GENERATION ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let canvas = null;
@@ -230,7 +229,7 @@ export default function AnonymousVoiceApp() {
       let recorder = null;
 
       try {
-        // A. Load Image First
+        // A. Load Image
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.src = ROBOT_IMAGE_URL;
@@ -239,10 +238,9 @@ export default function AnonymousVoiceApp() {
             img.onerror = rej;
         });
 
-        // B. Setup Audio Context (Aggressive Resume)
+        // B. Setup Audio Context
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         ctx = new AudioContext();
-        
         if (ctx.state === 'suspended') await ctx.resume();
 
         const arrayBuffer = await audioBlob.arrayBuffer();
@@ -253,18 +251,15 @@ export default function AnonymousVoiceApp() {
         
         const dest = ctx.createMediaStreamDestination();
         source.connect(dest);
-        
-        // Optional: Connect to speakers so user can hear it being made
-        // source.connect(ctx.destination); 
 
-        // C. Setup Canvas & DOM Attachment
+        // C. Setup Canvas
         const width = 360; 
         const height = 640; 
         canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         
-        // --- MOBILE FIX: Canvas must be in DOM for iOS ---
+        // Mobile Fix: Attach to DOM
         Object.assign(canvas.style, {
             position: 'fixed',
             top: '0',
@@ -278,15 +273,16 @@ export default function AnonymousVoiceApp() {
         const canvasCtx = canvas.getContext('2d', { alpha: false });
 
         // D. Setup Recorder
-        const stream = canvas.captureStream(30); // 30 FPS
+        const stream = canvas.captureStream(30); 
         const combinedStream = new MediaStream([
             ...stream.getVideoTracks(),
             ...dest.stream.getAudioTracks()
         ]);
         
+        // 🚨 WHATSAPP FIX: PRIORITIZE H.264 🚨
         const mimeTypes = [
-            'video/mp4',
-            'video/webm;codecs=h264',
+            'video/mp4',             // iOS Native
+            'video/webm;codecs=h264', // Android preferred for compat
             'video/webm;codecs=vp8',
             'video/webm'
         ];
@@ -303,18 +299,19 @@ export default function AnonymousVoiceApp() {
         recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
         
         recorder.onstop = () => {
+           // We keep the original mime for the blob creation to avoid corruption
            const finalBlob = new Blob(chunks, { type: selectedMime });
            if(document.body.contains(canvas)) document.body.removeChild(canvas);
            ctx.close();
            resolve(finalBlob);
         };
 
-        // E. Start Recording & Audio
+        // E. Start
         recorder.start(100); 
-        await new Promise(r => setTimeout(r, 100)); // Buffer
+        await new Promise(r => setTimeout(r, 100)); 
         source.start(0);
 
-        // F. Animation Loop (Just drawing the image + text repeatedly)
+        // F. Draw Loop
         const duration = audioBufferData.duration;
         const startTime = ctx.currentTime;
 
@@ -327,21 +324,20 @@ export default function AnonymousVoiceApp() {
             return;
           }
 
-          // 1. Draw Image (Cover style)
-          // Calculate scale to cover
+          // Draw Image
           const scale = Math.max(width / img.width, height / img.height);
           const x = (width / 2) - (img.width / 2) * scale;
           const y = (height / 2) - (img.height / 2) * scale;
           canvasCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
 
-          // 2. Add Dark Overlay for text readability
+          // Draw Overlay
           const grad = canvasCtx.createLinearGradient(0, height/2, 0, height);
           grad.addColorStop(0, 'rgba(0,0,0,0)');
           grad.addColorStop(1, 'rgba(0,0,0,0.9)');
           canvasCtx.fillStyle = grad;
           canvasCtx.fillRect(0, 0, width, height);
 
-          // 3. Add Text Overlay (Subtitles)
+          // Draw Text
           if (text) {
              canvasCtx.font='bold 20px sans-serif';
              canvasCtx.fillStyle='#fff';
@@ -358,7 +354,6 @@ export default function AnonymousVoiceApp() {
              canvasCtx.shadowBlur=0;
           }
           
-          // 4. Branding
           canvasCtx.font='bold 24px monospace';
           canvasCtx.fillStyle='#667eea';
           canvasCtx.fillText("ANON VOX", width/2, 50);
@@ -377,9 +372,17 @@ export default function AnonymousVoiceApp() {
 
   // --- STEP 4 & 5: UPLOAD & SAVE ---
   const uploadVideo = async (blob) => {
-    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-    const fileName = `voicerss-${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('voices').upload(fileName, blob);
+    // 🚨 WHATSAPP FIX: FORCE .MP4 EXTENSION 🚨
+    // Even if it is WebM (H.264), naming it .mp4 tricks WhatsApp on Android.
+    // iOS produces real MP4, so it's safe there too.
+    const fileName = `voicerss-${Date.now()}.mp4`;
+    
+    // We upload with the blob's actual type to be safe for Supabase
+    // But the filename implies MP4
+    const { error } = await supabase.storage.from('voices').upload(fileName, blob, {
+        contentType: blob.type // keep original content type for upload stability
+    });
+    
     if (error) throw new Error("Storage Upload Failed: " + error.message);
     const { data } = supabase.storage.from('voices').getPublicUrl(fileName);
     return data.publicUrl;
@@ -394,6 +397,7 @@ export default function AnonymousVoiceApp() {
     if (error) throw new Error("DB Save Failed: " + error.message);
   };
 
+  // 🚨 WHATSAPP FIX: SHARE LOGIC 🚨
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share) {
       alert("Sharing not supported. Downloading...");
@@ -404,13 +408,23 @@ export default function AnonymousVoiceApp() {
     try {
       const response = await fetch(videoUrl);
       const blob = await response.blob();
-      const mime = blob.type.includes('mp4') ? 'video/mp4' : 'video/webm';
-      const file = new File([blob], `msg-${msgId}.${mime.includes('mp4')?'mp4':'webm'}`, { type: mime });
-      await navigator.share({ files: [file] });
-    } catch (e) { console.error(e); } 
+      
+      // 🚨 FORCE SPOOF MIME TYPE TO VIDEO/MP4 🚨
+      // This is the key trick for WhatsApp sharing on Android/iOS when using WebM
+      const file = new File([blob], `anonvox-${msgId}.mp4`, { type: 'video/mp4' });
+      
+      await navigator.share({ 
+          files: [file],
+          // Do NOT add 'text' or 'title' or 'url' fields. WhatsApp prefers files-only.
+      });
+    } catch (e) { 
+        console.error(e);
+        if (e.name !== 'AbortError') alert("Share failed. Try downloading.");
+    } 
     finally { setSharingId(null); }
   };
 
+  // --- RECORDING UI ---
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
