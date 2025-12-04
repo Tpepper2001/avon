@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
   Square, Trash2, Film, Download, Heart, Zap, Ghost, Instagram, 
-  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit, Cpu, Volume2 
+  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit, Cpu, Volume2, Mic2 
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -13,12 +13,15 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
-// 🔴 PASTE YOUR ASSEMBLY AI KEY INSIDE THE QUOTES BELOW 🔴
+// 🔴 1. PASTE ASSEMBLY AI KEY HERE 🔴
 const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
+
+// 🔴 2. PASTE VOICE RSS KEY HERE (Get free at voicerss.org) 🔴
+const VOICERSS_KEY = '747fd61f3e264f42b52bcd332823661e'; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAX_RECORDING_TIME = 120; // 2 minutes
+const MAX_RECORDING_TIME = 120; 
 const REFRESH_INTERVAL = 10000;
 
 const AUDIO_CONSTRAINTS = {
@@ -34,7 +37,6 @@ export default function AnonymousVoiceApp() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('landing');
   const [authMode, setAuthMode] = useState('login');
-  const [activeTab, setActiveTab] = useState('inbox');
   const [formData, setFormData] = useState({ username: '', password: '', recipient: '' });
   
   // Recording State
@@ -42,9 +44,7 @@ export default function AnonymousVoiceApp() {
     isRecording: false, 
     time: 0, 
     rawBlob: null, 
-    rawUrl: null,
-    robotBlob: null, 
-    robotUrl: null
+    rawUrl: null
   });
 
   // Pipeline State
@@ -57,9 +57,7 @@ export default function AnonymousVoiceApp() {
 
   const [messages, setMessages] = useState([]);
   const [sharingId, setSharingId] = useState(null);
-  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
   
-  // --- REFS ---
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -73,14 +71,12 @@ export default function AnonymousVoiceApp() {
       setView('inbox');
       fetchMessages(savedUser.username);
     }
-    
     const params = new URLSearchParams(window.location.search);
     const sendTo = params.get('send_to');
     if (sendTo) {
       setFormData(prev => ({ ...prev, recipient: sendTo }));
       setView('recorder');
     }
-    
     return () => cleanupRecordingResources();
   }, []);
 
@@ -122,94 +118,40 @@ export default function AnonymousVoiceApp() {
   };
 
   // ==========================================
-  // --- AUDIO PROCESSING (PREVIEW GENERATION) ---
-  // ==========================================
-
-  const processToRobotAudio = async () => {
-    if (!recordingState.rawBlob) return;
-    setIsProcessingAudio(true);
-
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const arrayBuffer = await recordingState.rawBlob.arrayBuffer();
-        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        
-        const dest = ctx.createMediaStreamDestination();
-        
-        // Robot Effects
-        source.detune.value = -800; // Deep robot voice
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.5;
-
-        source.connect(gainNode);
-        gainNode.connect(dest);
-
-        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-        const recorder = new MediaRecorder(dest.stream, { mimeType: mime });
-        const chunks = [];
-
-        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-        
-        recorder.onstop = () => {
-            const robotBlob = new Blob(chunks, { type: mime });
-            const robotUrl = URL.createObjectURL(robotBlob);
-            
-            setRecordingState(prev => ({ 
-                ...prev, 
-                robotBlob: robotBlob, 
-                robotUrl: robotUrl 
-            }));
-            setIsProcessingAudio(false);
-            ctx.close();
-        };
-
-        recorder.start();
-        source.start(0);
-
-        setTimeout(() => {
-            if(recorder.state === 'recording') recorder.stop();
-        }, (audioBuffer.duration * 1000) + 200);
-
-    } catch (err) {
-        console.error("Audio processing failed", err);
-        alert("Failed to create robot voice.");
-        setIsProcessingAudio(false);
-    }
-  };
-
-  // ==========================================
   // --- THE MASTER PIPELINE ---
   // ==========================================
 
   const startPipeline = async () => {
-    if (!formData.recipient) {
-      alert("Error: No recipient specified. Who are we sending this to?");
-      return;
-    }
-    if (!recordingState.robotBlob) {
-        alert("Please create the robot voice preview first!");
-        return;
-    }
-    if (!ASSEMBLY_KEY) { alert("Missing AssemblyAI API Key"); return; }
+    if (!formData.recipient) return alert("Enter a recipient username first.");
+    if (!recordingState.rawBlob) return alert("Record something first!");
+    if (!ASSEMBLY_KEY) return alert("Missing AssemblyAI API Key");
+    if (!VOICERSS_KEY) return alert("Missing VoiceRSS API Key");
 
-    setPipeline({ active: true, step: 'transcribing', progress: 10, error: null });
+    setPipeline({ active: true, step: 'transcribing', progress: 5, error: null });
 
     try {
-      // 1. TRANSCRIBING... 
+      // 1. TRANSCRIBING (AssemblyAI)
       const text = await performTranscription(recordingState.rawBlob);
-      setPipeline({ active: true, step: 'video', progress: 50, error: null });
-      
-      // 2. TURNING TO VIDEO... 
-      const videoBlob = await generateVideoBlob(recordingState.robotBlob, text);
-      setPipeline({ active: true, step: 'sending', progress: 80, error: null });
+      if (!text || text.trim().length === 0) throw new Error("Could not understand audio. Try speaking clearer.");
+      console.log("Transcribed Text:", text);
 
-      // 3. UPLOADING VIDEO...
+      // 2. GENERATING VOICE (VoiceRSS)
+      setPipeline({ active: true, step: 'voice', progress: 30, error: null });
+      const cleanTTSBlob = await generateVoiceRSSTTS(text);
+      
+      // 3. ROBOTIFYING (Web Audio API)
+      setPipeline({ active: true, step: 'robot', progress: 50, error: null });
+      const robotAudioBlob = await applyRobotEffect(cleanTTSBlob);
+
+      // 4. GENERATING VIDEO
+      setPipeline({ active: true, step: 'video', progress: 70, error: null });
+      const videoBlob = await generateVideoBlob(robotAudioBlob, text);
+
+      // 5. UPLOADING
+      setPipeline({ active: true, step: 'sending', progress: 90, error: null });
       const publicUrl = await uploadVideo(videoBlob);
       
-      // 4. SAVING TO DB (CRITICAL STEP)
+      // 6. SAVING
       await saveMessageToDB(publicUrl, text);
 
       setPipeline({ active: true, step: 'sent', progress: 100, error: null });
@@ -226,7 +168,7 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- PIPELINE HELPERS ---
+  // --- STEP 1: TRANSCRIPTION (AssemblyAI) ---
   const performTranscription = async (blob) => {
     try {
       const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
@@ -255,11 +197,95 @@ export default function AnonymousVoiceApp() {
         await new Promise(r => setTimeout(r, 1000));
       }
     } catch (e) {
-      console.warn("Transcription failed, continuing without text:", e);
-      return ""; // Fail gracefully without crashing the whole send process
+      throw new Error("Transcription Error: " + e.message);
     }
   };
 
+  // --- STEP 2: GENERATE TTS (VoiceRSS) ---
+  const generateVoiceRSSTTS = async (text) => {
+    if (!VOICERSS_KEY) throw new Error("Missing VoiceRSS Key");
+
+    // Using POST to support longer text
+    const params = new URLSearchParams();
+    params.append('key', VOICERSS_KEY);
+    params.append('src', text);
+    params.append('hl', 'en-us');
+    params.append('v', 'Mike'); // Voices: Mike, Alice, etc.
+    params.append('r', '0');    // Rate: 0 is normal
+    params.append('c', 'MP3');  // Codec
+    params.append('f', '44khz_16bit_stereo');
+
+    const response = await fetch('https://api.voicerss.org/', {
+      method: 'POST',
+      body: params
+    });
+
+    if (!response.ok) throw new Error("VoiceRSS API Failed");
+    
+    // VoiceRSS returns the audio file directly
+    const blob = await response.blob();
+    return blob;
+  };
+
+  // --- STEP 3: APPLY ROBOT EFFECT (Web Audio API) ---
+  const applyRobotEffect = async (inputBlob) => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const arrayBuffer = await inputBlob.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        
+        const dest = ctx.createMediaStreamDestination();
+        
+        // --- ROBOT SETTINGS ---
+        // Since VoiceRSS 'Mike' is already deep, we adjust slightly
+        source.detune.value = -300; 
+
+        // Ring Modulator Effect (Classic Robot)
+        const oscillator = ctx.createOscillator();
+        oscillator.frequency.value = 30; // Hz flutter
+        oscillator.type = 'square';
+        const oscGain = ctx.createGain();
+        oscGain.gain.value = 0.1; // Mix amount
+        
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = 1.2;
+
+        source.connect(gainNode);
+        gainNode.connect(dest);
+
+        // Optional: Mix in oscillator for "buzz"
+        // oscillator.connect(oscGain);
+        // oscGain.connect(gainNode.gain); 
+        // oscillator.start();
+
+        const recorder = new MediaRecorder(dest.stream);
+        const chunks = [];
+
+        recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.onstop = () => {
+            const blob = new Blob(chunks, { type: 'audio/webm' });
+            ctx.close();
+            resolve(blob);
+        };
+
+        recorder.start();
+        source.start(0);
+        
+        setTimeout(() => {
+            if(recorder.state === 'recording') recorder.stop();
+        }, (audioBuffer.duration * 1000) + 300);
+
+      } catch (e) {
+        reject(e);
+      }
+    });
+  };
+
+  // --- STEP 4: VIDEO GENERATION ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -315,41 +341,54 @@ export default function AnonymousVoiceApp() {
         analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
 
+        // Draw Visuals
         const grad = canvasCtx.createLinearGradient(0,0,0,height);
-        grad.addColorStop(0, '#0f172a');
-        grad.addColorStop(1, '#667eea'); 
+        grad.addColorStop(0, '#000000');
+        grad.addColorStop(1, '#16a34a'); // Green theme 
         canvasCtx.fillStyle = grad;
         canvasCtx.fillRect(0,0,width,height);
 
         const t = Date.now()/1000;
         canvasCtx.save();
         canvasCtx.translate(width/2, height/2);
-        canvasCtx.translate(0, Math.sin(t*3)*15);
+        
+        // Robot Head
         canvasCtx.fillStyle = '#e2e8f0';
         canvasCtx.beginPath(); canvasCtx.roundRect(-150,-150,300,300,30); canvasCtx.fill();
-        canvasCtx.fillStyle = '#667eea';
-        canvasCtx.shadowBlur=20; canvasCtx.shadowColor='#667eea';
-        canvasCtx.fillRect(-90,-40,60,40);
-        canvasCtx.fillRect(30,-40,60,40);
-        canvasCtx.shadowBlur=0;
-        const mouthHeight = Math.max(5, avg * 2);
+
+        // Eyes
         canvasCtx.fillStyle = '#1e293b';
-        canvasCtx.fillRect(-75, 80, 150, mouthHeight);
+        canvasCtx.fillRect(-100, -50, 200, 60);
+        
+        // Glowing Eye Bar
+        canvasCtx.fillStyle = '#ef4444'; // Red eye
+        canvasCtx.shadowBlur = 20;
+        canvasCtx.shadowColor = '#ef4444';
+        const eyeWidth = 180 * Math.abs(Math.sin(t * 3)); 
+        canvasCtx.fillRect(-eyeWidth/2, -40, eyeWidth, 40);
+        canvasCtx.shadowBlur = 0;
+
+        // Mouth (Spectrum)
+        canvasCtx.fillStyle = '#334155';
+        const mouthOpen = Math.max(5, avg * 1.5);
+        canvasCtx.fillRect(-80, 80, 160, mouthOpen);
+
         canvasCtx.restore();
 
-        canvasCtx.font='bold 40px sans-serif';
-        canvasCtx.fillStyle='rgba(255,255,255,0.8)';
-        canvasCtx.textAlign='center';
-        canvasCtx.fillText('ANON VOX', width/2, 150);
-
+        // Subtitles
         if (text) {
-           canvasCtx.font='30px sans-serif';
+           canvasCtx.font='bold 32px sans-serif';
            canvasCtx.fillStyle='#fff';
+           canvasCtx.textAlign = 'center';
            const words = text.split(' ');
            const p = elapsed / duration;
            const idx = Math.floor(p * words.length);
-           const segment = words.slice(Math.max(0, idx-2), idx+3).join(' ');
-           canvasCtx.fillText(segment, width/2, height - 200);
+           const segment = words.slice(Math.max(0, idx-3), idx+4).join(' ');
+           
+           canvasCtx.shadowColor="black";
+           canvasCtx.shadowBlur=4;
+           canvasCtx.fillText(segment, width/2, height - 250);
+           canvasCtx.shadowBlur=0;
         }
 
         requestAnimationFrame(draw);
@@ -358,9 +397,10 @@ export default function AnonymousVoiceApp() {
     });
   };
 
+  // --- STEP 5 & 6: UPLOAD & SAVE ---
   const uploadVideo = async (blob) => {
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-    const fileName = `final-${Date.now()}.${ext}`;
+    const fileName = `voicerss-${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from('voices').upload(fileName, blob);
     if (error) throw new Error("Storage Upload Failed: " + error.message);
     const { data } = supabase.storage.from('voices').getPublicUrl(fileName);
@@ -368,21 +408,14 @@ export default function AnonymousVoiceApp() {
   };
 
   const saveMessageToDB = async (url, text) => {
-    console.log("Saving to DB for:", formData.recipient);
     const { error } = await supabase.from('messages').insert({
-      username: formData.recipient, // MUST match the 'username' field in the DB
-      text: text || '[Voice Message]',
+      username: formData.recipient, 
+      text: text || '[AI Voice Message]',
       video_url: url 
     });
-    
-    if (error) {
-        console.error("DB Insert Error:", error);
-        throw new Error("Database Save Failed (Check RLS Policies): " + error.message);
-    }
+    if (error) throw new Error("DB Save Failed: " + error.message);
   };
 
-
-  // --- NATIVE SHARE ---
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share) {
       alert("Sharing not supported. Downloading...");
@@ -400,7 +433,6 @@ export default function AnonymousVoiceApp() {
     finally { setSharingId(null); }
   };
 
-  // --- RECORDING UI LOGIC ---
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
@@ -417,14 +449,12 @@ export default function AnonymousVoiceApp() {
             isRecording: false, 
             rawBlob: blob, 
             rawUrl: URL.createObjectURL(blob),
-            robotBlob: null,
-            robotUrl: null
         }));
         stream.getTracks().forEach(t => t.stop());
       };
 
       recorder.start(1000); 
-      setRecordingState({ isRecording: true, time: 0, rawBlob: null, rawUrl: null, robotBlob: null, robotUrl: null });
+      setRecordingState({ isRecording: true, time: 0, rawBlob: null, rawUrl: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
     } catch (err) { alert("Mic access denied"); }
   };
@@ -503,6 +533,8 @@ export default function AnonymousVoiceApp() {
                   <div>
                     <h2 className="text-2xl font-black uppercase tracking-tighter mb-2">
                       {pipeline.step === 'transcribing' && "Understanding Audio..."}
+                      {pipeline.step === 'voice' && "Generating Voice (VoiceRSS)..."}
+                      {pipeline.step === 'robot' && "Applying Robot Effects..."}
                       {pipeline.step === 'video' && "Generating Video..."}
                       {pipeline.step === 'sending' && "Sending..."}
                       {pipeline.step === 'sent' && "Sent!"}
@@ -524,37 +556,20 @@ export default function AnonymousVoiceApp() {
                 ) : (
                   <div className="space-y-4">
                     <div className="bg-gray-100 p-6 rounded-2xl flex flex-col items-center gap-4">
-                      
                       <div className="flex w-full items-center justify-between border-b border-gray-300 pb-3">
-                        <span className="text-xs font-bold text-gray-500 uppercase">Original Voice</span>
+                        <span className="text-xs font-bold text-gray-500 uppercase">Your Voice</span>
                         <button onClick={() => { const a = new Audio(recordingState.rawUrl); a.play(); }} className="bg-white p-2 rounded-full shadow-sm"><Play className="w-4 h-4 text-black"/></button>
                       </div>
-
-                      {recordingState.robotUrl ? (
-                         <div className="flex w-full items-center justify-between animate-in slide-in-from-top-2">
-                            <span className="text-xs font-bold text-purple-600 uppercase flex items-center gap-1"><Cpu className="w-3 h-3"/> Robot Voice</span>
-                            <button onClick={() => { const a = new Audio(recordingState.robotUrl); a.play(); }} className="bg-purple-600 p-2 rounded-full shadow-sm text-white"><Volume2 className="w-4 h-4"/></button>
-                         </div>
-                      ) : (
-                         <button 
-                            onClick={processToRobotAudio} 
-                            disabled={isProcessingAudio}
-                            className="w-full py-3 bg-indigo-100 text-indigo-700 rounded-lg font-bold text-sm flex justify-center items-center gap-2 hover:bg-indigo-200"
-                         >
-                            {isProcessingAudio ? <Loader2 className="w-4 h-4 animate-spin"/> : <Cpu className="w-4 h-4"/>} 
-                            {isProcessingAudio ? 'Transforming...' : 'Transform to Robot Voice'}
-                         </button>
-                      )}
-
+                      <div className="text-xs text-gray-500 text-center">
+                        This audio will be transcribed, converted to speech, robotified, and then sent as a video.
+                      </div>
                     </div>
 
-                    {recordingState.robotUrl && (
-                        <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2 animate-in fade-in">
-                        <Zap className="w-5 h-5" /> Send Now
-                        </button>
-                    )}
+                    <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2 animate-in fade-in">
+                       <Zap className="w-5 h-5" /> Generate & Send
+                    </button>
                     
-                    <button onClick={() => setRecordingState({ isRecording: false, time: 0, rawBlob: null, rawUrl: null, robotBlob: null, robotUrl: null })} className="w-full py-3 text-red-500 font-bold">Discard</button>
+                    <button onClick={() => setRecordingState({ isRecording: false, time: 0, rawBlob: null, rawUrl: null })} className="w-full py-3 text-red-500 font-bold">Discard</button>
                   </div>
                 )
               )}
