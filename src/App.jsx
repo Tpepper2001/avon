@@ -160,8 +160,12 @@ export default function AnonymousVoiceApp() {
       
       console.log('Created file:', file.name, file.type, file.size);
 
-      // Try sharing with just the file
-      const shareData = { files: [file] };
+      // Share with BOTH file AND text for WhatsApp compatibility
+      // WhatsApp requires text to be present when sharing media
+      const shareData = { 
+        files: [file],
+        text: '🎤 Anonymous voice message from AnonVox' // WhatsApp needs this!
+      };
       
       // Check if this specific data can be shared
       if (navigator.canShare && !navigator.canShare(shareData)) {
