@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
   Square, Trash2, Film, Download, Heart, Zap, Ghost, Instagram, 
-  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit, Cpu 
+  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit, Cpu, Volume2 
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -29,10 +29,6 @@ const AUDIO_CONSTRAINTS = {
   }
 };
 
-const VOICE_TYPES = {
-  ROBOT: { id: 'robot', name: 'Bot', color: '#667eea', detune: -800, speed: 1.0, req: 0 },
-};
-
 const MESSAGE_TEMPLATES = [
   "Confession: I've had a crush on you since...",
   "Truth Bomb: You need to hear this...",
@@ -51,20 +47,23 @@ export default function AnonymousVoiceApp() {
   const [recordingState, setRecordingState] = useState({ 
     isRecording: false, 
     time: 0, 
-    blob: null, 
-    url: null
+    rawBlob: null, // The original voice
+    rawUrl: null,
+    robotBlob: null, // The processed robot voice
+    robotUrl: null
   });
 
-  // Pipeline State (The Progress Bar Logic)
+  // Pipeline State
   const [pipeline, setPipeline] = useState({
     active: false,
-    step: '', // 'transcribing', 'robotic', 'video', 'sending', 'sent'
+    step: '', 
     progress: 0,
     error: null
   });
 
   const [messages, setMessages] = useState([]);
   const [sharingId, setSharingId] = useState(null);
+  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
@@ -129,35 +128,101 @@ export default function AnonymousVoiceApp() {
   };
 
   // ==========================================
+  // --- AUDIO PROCESSING (PREVIEW GENERATION) ---
+  // ==========================================
+
+  // This function takes raw audio and creates the Robot Blob
+  const processToRobotAudio = async () => {
+    if (!recordingState.rawBlob) return;
+    setIsProcessingAudio(true);
+
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const arrayBuffer = await recordingState.rawBlob.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+        // 1. Setup Audio Graph
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        
+        const dest = ctx.createMediaStreamDestination();
+        
+        // --- ROBOT EFFECTS ---
+        // Pitch Shift (Detune)
+        source.detune.value = -800; // Deep robot voice
+        
+        // Gain (Volume Boost)
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = 1.5;
+
+        // Connect graph
+        source.connect(gainNode);
+        gainNode.connect(dest);
+
+        // 2. Record the processed output
+        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+        const recorder = new MediaRecorder(dest.stream, { mimeType: mime });
+        const chunks = [];
+
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        
+        recorder.onstop = () => {
+            const robotBlob = new Blob(chunks, { type: mime });
+            const robotUrl = URL.createObjectURL(robotBlob);
+            
+            setRecordingState(prev => ({ 
+                ...prev, 
+                robotBlob: robotBlob, 
+                robotUrl: robotUrl 
+            }));
+            setIsProcessingAudio(false);
+            ctx.close();
+        };
+
+        recorder.start();
+        source.start(0);
+
+        // Stop recording when audio ends
+        setTimeout(() => {
+            if(recorder.state === 'recording') recorder.stop();
+        }, (audioBuffer.duration * 1000) + 200); // +200ms buffer
+
+    } catch (err) {
+        console.error("Audio processing failed", err);
+        alert("Failed to create robot voice.");
+        setIsProcessingAudio(false);
+    }
+  };
+
+  // ==========================================
   // --- THE MASTER PIPELINE ---
   // ==========================================
 
   const startPipeline = async () => {
-    if (!recordingState.blob) return;
+    if (!recordingState.robotBlob) {
+        alert("Please create the robot voice preview first!");
+        return;
+    }
     if (!ASSEMBLY_KEY) { alert("Missing AssemblyAI API Key"); return; }
 
     setPipeline({ active: true, step: 'transcribing', progress: 10, error: null });
 
     try {
-      // 1. TRANSCRIBING...
-      const text = await performTranscription(recordingState.blob);
-      setPipeline({ active: true, step: 'robotic', progress: 40, error: null });
+      // 1. TRANSCRIBING... (Use RAW audio for better AI accuracy)
+      const text = await performTranscription(recordingState.rawBlob);
+      setPipeline({ active: true, step: 'video', progress: 50, error: null });
       
-      // 2. TURNING TO ROBOTIC VOICE... (Simulated delay for effect, actual processing happens in video step)
-      await new Promise(r => setTimeout(r, 1500)); 
-      setPipeline({ active: true, step: 'video', progress: 60, error: null });
-
-      // 3. TURNING TO VIDEO...
-      const videoBlob = await generateVideoBlob(recordingState.blob, text);
+      // 2. TURNING TO VIDEO... (Use ROBOT audio for the final file)
+      // We pass the ROBOT blob here to ensure the video sounds exactly like the preview.
+      const videoBlob = await generateVideoBlob(recordingState.robotBlob, text);
       setPipeline({ active: true, step: 'sending', progress: 80, error: null });
 
-      // 4. VIDEO SENT
+      // 3. VIDEO SENT
       const publicUrl = await uploadVideo(videoBlob);
       await saveMessageToDB(publicUrl, text);
 
       setPipeline({ active: true, step: 'sent', progress: 100, error: null });
       
-      // Reset after success
       setTimeout(() => {
         alert("Video Sent! 🚀");
         window.location.href = window.location.origin;
@@ -171,7 +236,7 @@ export default function AnonymousVoiceApp() {
 
   // --- PIPELINE STEP 1: TRANSCRIPTION ---
   const performTranscription = async (blob) => {
-    // Upload
+    // Upload Raw Audio
     const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
       method: 'POST',
       headers: { 'Authorization': ASSEMBLY_KEY },
@@ -201,32 +266,26 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- PIPELINE STEP 3: VIDEO GENERATION ---
+  // --- PIPELINE STEP 2: VIDEO GENERATION ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let ctx = new (window.AudioContext || window.webkitAudioContext)();
       const arrayBuffer = await audioBlob.arrayBuffer();
       const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
 
-      // Setup Nodes (Robotic Effect)
+      // Connect existing robot audio to destination & analyzer
       const source = ctx.createBufferSource();
       source.buffer = audioBufferData;
+      
       const dest = ctx.createMediaStreamDestination();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
 
-      // Robot Settings
-      source.detune.value = -800; // Low pitch
-      
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = 2.0;
-
-      source.connect(gainNode);
-      gainNode.connect(analyser);
-      gainNode.connect(dest);
+      source.connect(analyser);
+      source.connect(dest); // Audio goes to video stream
 
       // Canvas
-      const width = 720; // 720p is faster for mobile generation
+      const width = 720; 
       const height = 1280;
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -250,7 +309,7 @@ export default function AnonymousVoiceApp() {
       recorder.start();
       source.start(0);
 
-      // Animation Loop
+      // Visuals Loop
       const duration = audioBufferData.duration;
       const startTime = ctx.currentTime;
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -266,10 +325,10 @@ export default function AnonymousVoiceApp() {
         analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
 
-        // Draw visuals
+        // Draw Background
         const grad = canvasCtx.createLinearGradient(0,0,0,height);
         grad.addColorStop(0, '#0f172a');
-        grad.addColorStop(1, '#667eea'); // Robot Color
+        grad.addColorStop(1, '#667eea'); 
         canvasCtx.fillStyle = grad;
         canvasCtx.fillRect(0,0,width,height);
 
@@ -278,7 +337,7 @@ export default function AnonymousVoiceApp() {
         canvasCtx.translate(width/2, height/2);
         canvasCtx.translate(0, Math.sin(t*3)*15);
 
-        // Robot Face
+        // Robot Head
         canvasCtx.fillStyle = '#e2e8f0';
         canvasCtx.beginPath(); canvasCtx.roundRect(-150,-150,300,300,30); canvasCtx.fill();
 
@@ -289,7 +348,7 @@ export default function AnonymousVoiceApp() {
         canvasCtx.fillRect(30,-40,60,40);
         canvasCtx.shadowBlur=0;
 
-        // Mouth
+        // Mouth (Visualizer)
         const mouthHeight = Math.max(5, avg * 2);
         canvasCtx.fillStyle = '#1e293b';
         canvasCtx.fillRect(-75, 80, 150, mouthHeight);
@@ -301,7 +360,7 @@ export default function AnonymousVoiceApp() {
         canvasCtx.textAlign='center';
         canvasCtx.fillText('ANON VOX', width/2, 150);
 
-        // Subtitles (Transcript)
+        // Subtitles
         if (text) {
            canvasCtx.font='30px sans-serif';
            canvasCtx.fillStyle='#fff';
@@ -332,7 +391,7 @@ export default function AnonymousVoiceApp() {
     const { error } = await supabase.from('messages').insert({
       username: formData.recipient,
       text: text || '[Voice Message]',
-      video_url: url // We send the video URL directly now
+      video_url: url 
     });
     if (error) throw error;
   };
@@ -368,12 +427,20 @@ export default function AnonymousVoiceApp() {
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
+        // Reset robot state when new recording happens
+        setRecordingState(p => ({ 
+            ...p, 
+            isRecording: false, 
+            rawBlob: blob, 
+            rawUrl: URL.createObjectURL(blob),
+            robotBlob: null,
+            robotUrl: null
+        }));
         stream.getTracks().forEach(t => t.stop());
       };
 
       recorder.start(1000); 
-      setRecordingState({ isRecording: true, time: 0, blob: null, url: null });
+      setRecordingState({ isRecording: true, time: 0, rawBlob: null, rawUrl: null, robotBlob: null, robotUrl: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
     } catch (err) { alert("Mic access denied"); }
   };
@@ -416,7 +483,7 @@ export default function AnonymousVoiceApp() {
           <div className="absolute inset-0 bg-gradient-to-br from-purple-900 to-black opacity-80" />
           <div className="relative z-10 text-center max-w-md w-full">
             <h1 className="text-5xl font-black mb-2">AnonVox</h1>
-            <p className="text-gray-400 mb-8">Send anonymous messages.<br/>They see a robot, not you.</p>
+            <p className="text-gray-400 mb-8">Send anonymous audio.<br/>They see a robot, not you.</p>
             <div className="grid gap-4">
               <button onClick={() => { setView('auth'); setAuthMode('signup'); }} className="w-full py-4 bg-white text-black rounded-xl font-bold">Get Started</button>
               <button onClick={() => { setView('auth'); setAuthMode('login'); }} className="w-full py-4 bg-gray-800 text-gray-300 rounded-xl font-bold">Log In</button>
@@ -435,20 +502,18 @@ export default function AnonymousVoiceApp() {
             
             <div className="p-8 flex-1 flex flex-col justify-center">
               
-              {/* --- PIPELINE PROGRESS VIEW (When Processing) --- */}
+              {/* --- PIPELINE PROGRESS VIEW --- */}
               {pipeline.active ? (
                 <div className="space-y-6 text-center animate-in fade-in zoom-in">
                   <div className="w-24 h-24 mx-auto bg-black rounded-full flex items-center justify-center">
                      {pipeline.step === 'sent' ? <Check className="text-green-500 w-10 h-10"/> : <Loader2 className="text-white w-10 h-10 animate-spin"/>}
                   </div>
-                  
                   <div>
                     <h2 className="text-2xl font-black uppercase tracking-tighter mb-2">
-                      {pipeline.step === 'transcribing' && "Transcribing..."}
-                      {pipeline.step === 'robotic' && "Turning to robotic voice..."}
-                      {pipeline.step === 'video' && "Turning to video..."}
-                      {pipeline.step === 'sending' && "Video Sent"}
-                      {pipeline.step === 'sent' && "Video Sent"}
+                      {pipeline.step === 'transcribing' && "Understanding Audio..."}
+                      {pipeline.step === 'video' && "Generating Video..."}
+                      {pipeline.step === 'sending' && "Sending..."}
+                      {pipeline.step === 'sent' && "Sent!"}
                     </h2>
                     <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
                       <div className="bg-purple-600 h-full transition-all duration-500" style={{ width: `${pipeline.progress}%` }} />
@@ -456,8 +521,8 @@ export default function AnonymousVoiceApp() {
                   </div>
                 </div>
               ) : (
-                /* --- RECORDING VIEW --- */
-                !recordingState.blob ? (
+                /* --- RECORDING / REVIEW VIEW --- */
+                !recordingState.rawBlob ? (
                   <div className="flex flex-col items-center">
                      <div className="mb-6 w-full text-center"><p className="text-gray-400 font-bold">HOLD TO RECORD</p></div>
                      <button onClick={recordingState.isRecording ? stopRecording : startRecording} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all ${recordingState.isRecording ? 'bg-red-500 scale-110' : 'bg-black hover:scale-105'}`}>
@@ -466,20 +531,43 @@ export default function AnonymousVoiceApp() {
                     <p className="mt-4 font-mono font-bold text-xl">{Math.floor(recordingState.time / 60)}:{(recordingState.time % 60).toString().padStart(2, '0')}</p>
                   </div>
                 ) : (
-                  /* --- REVIEW VIEW (No Text Shown) --- */
+                  /* --- PREVIEW & TRANSFORM VIEW --- */
                   <div className="space-y-4">
-                    <div className="bg-purple-50 p-6 rounded-2xl flex flex-col items-center gap-4">
-                      <div className="flex items-center gap-2 text-purple-700 font-bold">
-                        <Check className="w-5 h-5"/> <span>Recorded Successfully</span>
+                    <div className="bg-gray-100 p-6 rounded-2xl flex flex-col items-center gap-4">
+                      
+                      {/* Original Audio Preview */}
+                      <div className="flex w-full items-center justify-between border-b border-gray-300 pb-3">
+                        <span className="text-xs font-bold text-gray-500 uppercase">Original Voice</span>
+                        <button onClick={() => { const a = new Audio(recordingState.rawUrl); a.play(); }} className="bg-white p-2 rounded-full shadow-sm"><Play className="w-4 h-4 text-black"/></button>
                       </div>
-                      <button onClick={() => { const a = new Audio(recordingState.url); a.play(); }} className="bg-white p-3 rounded-full shadow-sm"><Play className="w-6 h-6 text-black"/></button>
+
+                      {/* Robot Audio Preview */}
+                      {recordingState.robotUrl ? (
+                         <div className="flex w-full items-center justify-between animate-in slide-in-from-top-2">
+                            <span className="text-xs font-bold text-purple-600 uppercase flex items-center gap-1"><Cpu className="w-3 h-3"/> Robot Voice</span>
+                            <button onClick={() => { const a = new Audio(recordingState.robotUrl); a.play(); }} className="bg-purple-600 p-2 rounded-full shadow-sm text-white"><Volume2 className="w-4 h-4"/></button>
+                         </div>
+                      ) : (
+                         <button 
+                            onClick={processToRobotAudio} 
+                            disabled={isProcessingAudio}
+                            className="w-full py-3 bg-indigo-100 text-indigo-700 rounded-lg font-bold text-sm flex justify-center items-center gap-2 hover:bg-indigo-200"
+                         >
+                            {isProcessingAudio ? <Loader2 className="w-4 h-4 animate-spin"/> : <Cpu className="w-4 h-4"/>} 
+                            {isProcessingAudio ? 'Transforming...' : 'Transform to Robot Voice'}
+                         </button>
+                      )}
+
                     </div>
 
-                    <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2">
-                       <Zap className="w-5 h-5" /> Transform & Send
-                    </button>
+                    {/* Send Button only appears after Robot Voice is generated */}
+                    {recordingState.robotUrl && (
+                        <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2 animate-in fade-in">
+                        <Zap className="w-5 h-5" /> Send Now
+                        </button>
+                    )}
                     
-                    <button onClick={() => setRecordingState({ isRecording: false, time: 0, blob: null })} className="w-full py-3 text-red-500 font-bold">Discard</button>
+                    <button onClick={() => setRecordingState({ isRecording: false, time: 0, rawBlob: null, rawUrl: null, robotBlob: null, robotUrl: null })} className="w-full py-3 text-red-500 font-bold">Discard</button>
                   </div>
                 )
               )}
