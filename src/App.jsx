@@ -24,11 +24,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const MAX_RECORDING_TIME = 120; 
 const REFRESH_INTERVAL = 10000;
 
+// Mobile-friendly audio constraints
 const AUDIO_CONSTRAINTS = {
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+    sampleRate: 44100, // Standard sample rate
   }
 };
 
@@ -139,8 +141,9 @@ export default function AnonymousVoiceApp() {
       setPipeline({ active: true, step: 'voice', progress: 40, error: null });
       const ttsBlob = await generateVoiceRSSTTS(text);
       
-      // 3. GENERATING VIDEO (Directly from TTS)
+      // 3. GENERATING VIDEO (Mobile-Robust Version)
       setPipeline({ active: true, step: 'video', progress: 70, error: null });
+      // We pass the raw recorded blob just for duration reference if needed, but we use ttsBlob for audio
       const videoBlob = await generateVideoBlob(ttsBlob, text);
 
       // 4. UPLOADING
@@ -205,7 +208,7 @@ export default function AnonymousVoiceApp() {
     params.append('key', VOICERSS_KEY);
     params.append('src', text);
     params.append('hl', 'en-us');
-    params.append('v', 'Mike'); // 'Mike' is usually standard, somewhat robotic
+    params.append('v', 'Mike'); 
     params.append('r', '0');
     params.append('c', 'MP3');
     params.append('f', '44khz_16bit_stereo');
@@ -217,120 +220,155 @@ export default function AnonymousVoiceApp() {
 
     if (!response.ok) throw new Error("VoiceRSS API Failed");
     
-    // VoiceRSS returns the audio file directly
-    const blob = await response.blob();
-    return blob;
+    return await response.blob();
   };
 
-  // --- STEP 3: VIDEO GENERATION ---
+  // --- STEP 3: VIDEO GENERATION (MOBILE ROBUST) ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
-      let ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
-
-      const source = ctx.createBufferSource();
-      source.buffer = audioBufferData;
-      
-      const dest = ctx.createMediaStreamDestination();
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-
-      source.connect(analyser);
-      source.connect(dest); 
-
-      const width = 720; 
-      const height = 1280;
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const canvasCtx = canvas.getContext('2d', { alpha: false });
-
-      const stream = canvas.captureStream(30);
-      const combinedStream = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-      
-      const mime = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm';
-      const recorder = new MediaRecorder(combinedStream, { mimeType: mime, videoBitsPerSecond: 2500000 });
-      const chunks = [];
-
-      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-      recorder.onstop = () => {
-         const blob = new Blob(chunks, { type: mime });
-         ctx.close();
-         resolve(blob);
-      };
-
-      recorder.start();
-      source.start(0);
-
-      const duration = audioBufferData.duration;
-      const startTime = ctx.currentTime;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-      const draw = () => {
-        if (ctx.state === 'closed') return;
-        const elapsed = ctx.currentTime - startTime;
-        if (elapsed >= duration + 0.5) {
-          recorder.stop();
-          return;
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioContext();
+        
+        // 1. MOBILE FIX: Resume AudioContext (must be triggered by the user click that called this)
+        if (ctx.state === 'suspended') {
+            await ctx.resume();
         }
 
-        analyser.getByteFrequencyData(dataArray);
-        const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
 
-        // Draw Visuals
-        const grad = canvasCtx.createLinearGradient(0,0,0,height);
-        grad.addColorStop(0, '#000000');
-        grad.addColorStop(1, '#16a34a'); // Green theme 
-        canvasCtx.fillStyle = grad;
+        const source = ctx.createBufferSource();
+        source.buffer = audioBufferData;
+        
+        const dest = ctx.createMediaStreamDestination();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+
+        source.connect(analyser);
+        source.connect(dest); 
+
+        // 2. MOBILE FIX: Use compatible canvas dimensions
+        const width = 360; 
+        const height = 640;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const canvasCtx = canvas.getContext('2d', { alpha: false });
+
+        // 3. MOBILE FIX: Draw INITIAL frame before recording starts
+        // This prevents the "Black Screen / 0s" issue on iOS
+        canvasCtx.fillStyle = '#000000';
         canvasCtx.fillRect(0,0,width,height);
-
-        const t = Date.now()/1000;
-        canvasCtx.save();
-        canvasCtx.translate(width/2, height/2);
         
-        // Robot Head
-        canvasCtx.fillStyle = '#e2e8f0';
-        canvasCtx.beginPath(); canvasCtx.roundRect(-150,-150,300,300,30); canvasCtx.fill();
-
-        // Eyes
-        canvasCtx.fillStyle = '#1e293b';
-        canvasCtx.fillRect(-100, -50, 200, 60);
+        const stream = canvas.captureStream(30);
         
-        // Glowing Eye Bar
-        canvasCtx.fillStyle = '#ef4444'; // Red eye
-        canvasCtx.shadowBlur = 20;
-        canvasCtx.shadowColor = '#ef4444';
-        const eyeWidth = 180 * Math.abs(Math.sin(t * 3)); 
-        canvasCtx.fillRect(-eyeWidth/2, -40, eyeWidth, 40);
-        canvasCtx.shadowBlur = 0;
+        // Combine audio and video tracks
+        const combinedStream = new MediaStream([
+            ...stream.getVideoTracks(),
+            ...dest.stream.getAudioTracks()
+        ]);
+        
+        // 4. MOBILE FIX: Aggressive MIME type checking
+        const mimeTypes = [
+            'video/mp4',
+            'video/webm;codecs=h264',
+            'video/webm;codecs=vp8',
+            'video/webm'
+        ];
+        const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
 
-        // Mouth (Spectrum)
-        canvasCtx.fillStyle = '#334155';
-        const mouthOpen = Math.max(5, avg * 1.5);
-        canvasCtx.fillRect(-80, 80, 160, mouthOpen);
+        const recorder = new MediaRecorder(combinedStream, { 
+            mimeType: selectedMime,
+            videoBitsPerSecond: 1500000 // Lower bitrate for mobile stability
+        });
+        
+        const chunks = [];
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        
+        recorder.onstop = () => {
+           const blob = new Blob(chunks, { type: selectedMime });
+           ctx.close();
+           resolve(blob);
+        };
 
-        canvasCtx.restore();
+        // 5. MOBILE FIX: Start recording with small timeslice to force chunk creation
+        recorder.start(100); 
+        source.start(0);
 
-        // Subtitles
-        if (text) {
-           canvasCtx.font='bold 32px sans-serif';
-           canvasCtx.fillStyle='#fff';
-           canvasCtx.textAlign = 'center';
-           const words = text.split(' ');
-           const p = elapsed / duration;
-           const idx = Math.floor(p * words.length);
-           const segment = words.slice(Math.max(0, idx-3), idx+4).join(' ');
-           
-           canvasCtx.shadowColor="black";
-           canvasCtx.shadowBlur=4;
-           canvasCtx.fillText(segment, width/2, height - 250);
-           canvasCtx.shadowBlur=0;
-        }
+        const duration = audioBufferData.duration;
+        const startTime = ctx.currentTime;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-        requestAnimationFrame(draw);
-      };
-      draw();
+        const draw = () => {
+          if (ctx.state === 'closed') return;
+          const elapsed = ctx.currentTime - startTime;
+          
+          // Add 0.5s buffer
+          if (elapsed >= duration + 0.5) {
+            if (recorder.state !== 'inactive') recorder.stop();
+            return;
+          }
+
+          analyser.getByteFrequencyData(dataArray);
+          const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
+
+          // Draw Visuals
+          const grad = canvasCtx.createLinearGradient(0,0,0,height);
+          grad.addColorStop(0, '#000000');
+          grad.addColorStop(1, '#16a34a'); // Green theme 
+          canvasCtx.fillStyle = grad;
+          canvasCtx.fillRect(0,0,width,height);
+
+          const t = Date.now()/1000;
+          canvasCtx.save();
+          canvasCtx.translate(width/2, height/2);
+          
+          // Robot Head
+          canvasCtx.fillStyle = '#e2e8f0';
+          canvasCtx.beginPath(); canvasCtx.roundRect(-75,-75,150,150,15); canvasCtx.fill();
+
+          // Eyes
+          canvasCtx.fillStyle = '#1e293b';
+          canvasCtx.fillRect(-50, -25, 100, 30);
+          
+          // Glowing Eye Bar
+          canvasCtx.fillStyle = '#ef4444'; // Red eye
+          canvasCtx.shadowBlur = 10;
+          canvasCtx.shadowColor = '#ef4444';
+          const eyeWidth = 90 * Math.abs(Math.sin(t * 3)); 
+          canvasCtx.fillRect(-eyeWidth/2, -20, eyeWidth, 20);
+          canvasCtx.shadowBlur = 0;
+
+          // Mouth (Spectrum)
+          canvasCtx.fillStyle = '#334155';
+          const mouthOpen = Math.max(2, avg * 0.8);
+          canvasCtx.fillRect(-40, 40, 80, mouthOpen);
+
+          canvasCtx.restore();
+
+          // Subtitles
+          if (text) {
+             canvasCtx.font='bold 16px sans-serif';
+             canvasCtx.fillStyle='#fff';
+             canvasCtx.textAlign = 'center';
+             const words = text.split(' ');
+             const p = elapsed / duration;
+             const idx = Math.floor(p * words.length);
+             const segment = words.slice(Math.max(0, idx-3), idx+4).join(' ');
+             
+             canvasCtx.shadowColor="black";
+             canvasCtx.shadowBlur=2;
+             canvasCtx.fillText(segment, width/2, height - 100);
+             canvasCtx.shadowBlur=0;
+          }
+
+          requestAnimationFrame(draw);
+        };
+        draw();
+      } catch (err) {
+        reject("Video Gen Error: " + err.message);
+      }
     });
   };
 
