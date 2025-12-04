@@ -16,22 +16,21 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 // 🔴 1. PASTE ASSEMBLY AI KEY HERE 🔴
 const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
 
-// 🔴 2. PASTE VOICE RSS KEY HERE 🔴
+// 🔴 2. PASTE VOICE RSS KEY HERE (Get free at voicerss.org) 🔴
 const VOICERSS_KEY = '747fd61f3e264f42b52bcd332823661e'; 
-
-// 🤖 STATIC ROBOT IMAGE
-const ROBOT_IMAGE_URL = "https://images.unsplash.com/photo-1535378437323-9528869de713?q=80&w=720&auto=format&fit=crop";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_RECORDING_TIME = 120; 
 const REFRESH_INTERVAL = 10000;
 
+// High compatibility audio settings
 const AUDIO_CONSTRAINTS = {
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+    sampleRate: 44100
   }
 };
 
@@ -130,15 +129,15 @@ export default function AnonymousVoiceApp() {
     setPipeline({ active: true, step: 'transcribing', progress: 5, error: null });
 
     try {
-      // 1. TRANSCRIBING (AssemblyAI)
+      // 1. TRANSCRIBING
       const text = await performTranscription(recordingState.rawBlob);
-      if (!text || text.trim().length === 0) throw new Error("Could not understand audio. Try speaking clearer.");
+      if (!text || text.trim().length === 0) throw new Error("Could not hear you. Try again.");
       
-      // 2. GENERATING VOICE (VoiceRSS)
+      // 2. GENERATING VOICE
       setPipeline({ active: true, step: 'voice', progress: 40, error: null });
       const ttsBlob = await generateVoiceRSSTTS(text);
       
-      // 3. GENERATING VIDEO (Strict MP4 check)
+      // 3. GENERATING VIDEO
       setPipeline({ active: true, step: 'video', progress: 70, error: null });
       const videoBlob = await generateVideoBlob(ttsBlob, text);
 
@@ -152,7 +151,7 @@ export default function AnonymousVoiceApp() {
       setPipeline({ active: true, step: 'sent', progress: 100, error: null });
       
       setTimeout(() => {
-        alert("Video Sent! 🚀");
+        alert("Sent! 🚀");
         window.location.href = window.location.origin;
       }, 1000);
 
@@ -218,7 +217,7 @@ export default function AnonymousVoiceApp() {
     return await response.blob();
   };
 
-  // --- STEP 3: VIDEO GENERATION (WHATSAPP COMPATIBLE) ---
+  // --- STEP 3: VIDEO GENERATION (CANVAS DRAWING) ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let canvas = null;
@@ -226,18 +225,11 @@ export default function AnonymousVoiceApp() {
       let recorder = null;
 
       try {
-        // A. Load Image
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.src = ROBOT_IMAGE_URL;
-        await new Promise((res, rej) => {
-            img.onload = res;
-            img.onerror = rej;
-        });
-
-        // B. Setup Audio
+        // A. Setup Audio Context
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         ctx = new AudioContext();
+        
+        // Resume is crucial for mobile
         if (ctx.state === 'suspended') await ctx.resume();
 
         const arrayBuffer = await audioBlob.arrayBuffer();
@@ -245,17 +237,22 @@ export default function AnonymousVoiceApp() {
 
         const source = ctx.createBufferSource();
         source.buffer = audioBufferData; 
+        
         const dest = ctx.createMediaStreamDestination();
-        source.connect(dest);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64; // Low detail for performance
 
-        // C. Setup Canvas
-        const width = 720; 
-        const height = 1280; 
+        source.connect(dest);
+        source.connect(analyser); // Connect for visualizer
+
+        // B. Setup Canvas (Programmatic Drawing - No External Images)
+        const width = 360; // Mobile Portrait
+        const height = 640; 
         canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         
-        // iOS Hack: Attach to DOM
+        // Attach to DOM (Hidden but active)
         Object.assign(canvas.style, {
             position: 'fixed', top: '0', left: '0', opacity: '0.01', pointerEvents: 'none', zIndex: '-1'
         });
@@ -263,50 +260,52 @@ export default function AnonymousVoiceApp() {
 
         const canvasCtx = canvas.getContext('2d', { alpha: false });
 
-        // D. Setup Recorder with Strict MP4 Preference
+        // C. Setup Recorder
         const stream = canvas.captureStream(30); 
         const combinedStream = new MediaStream([
             ...stream.getVideoTracks(),
             ...dest.stream.getAudioTracks()
         ]);
         
-        // 🚨 CRITICAL: Prioritize codecs that result in playable files
+        // Codec Priority for WhatsApp
         const mimeTypes = [
-            'video/mp4; codecs="avc1.424028, mp4a.40.2"', // H.264 High Profile (Best for WhatsApp)
+            'video/mp4; codecs="avc1.424028, mp4a.40.2"', // Best for iOS/WhatsApp
             'video/mp4',
-            'video/webm;codecs=h264', // Chrome/Android backup (H.264 in WebM)
+            'video/webm;codecs=h264', // Best for Android/WhatsApp
             'video/webm;codecs=vp8',
             'video/webm'
         ];
-        
         const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m));
 
         if (!selectedMime) throw new Error("No supported video MIME type found");
-        console.log("Selected MIME:", selectedMime);
 
         recorder = new MediaRecorder(combinedStream, { 
             mimeType: selectedMime,
-            videoBitsPerSecond: 2500000 
+            videoBitsPerSecond: 1500000 
         });
         
         const chunks = [];
         recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
         
         recorder.onstop = () => {
-           // We store the MIME type in the blob to help the share function later
+           // Create the blob
            const finalBlob = new Blob(chunks, { type: selectedMime.split(';')[0] });
+           // Cleanup
            if(document.body.contains(canvas)) document.body.removeChild(canvas);
            ctx.close();
            resolve(finalBlob);
         };
 
+        // D. Start Recording Sequence
         recorder.start(100); 
-        await new Promise(r => setTimeout(r, 100)); 
+        // Tiny buffer to ensure video frame is ready before audio starts
+        await new Promise(r => setTimeout(r, 100));
         source.start(0);
 
-        // E. Draw Loop
+        // E. Animation Loop (Draw Robot Face Programmatically)
         const duration = audioBufferData.duration;
         const startTime = ctx.currentTime;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
         const draw = () => {
           if (!ctx || ctx.state === 'closed') return;
@@ -317,39 +316,66 @@ export default function AnonymousVoiceApp() {
             return;
           }
 
-          // Draw Image
-          const scale = Math.max(width / img.width, height / img.height);
-          const x = (width / 2) - (img.width / 2) * scale;
-          const y = (height / 2) - (img.height / 2) * scale;
-          canvasCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
+          analyser.getByteFrequencyData(dataArray);
+          const volume = dataArray.reduce((a,b) => a+b, 0) / dataArray.length; // 0-255
 
-          // Dark Overlay
-          const grad = canvasCtx.createLinearGradient(0, height/2, 0, height);
-          grad.addColorStop(0, 'rgba(0,0,0,0)');
-          grad.addColorStop(1, 'rgba(0,0,0,0.9)');
-          canvasCtx.fillStyle = grad;
-          canvasCtx.fillRect(0, 0, width, height);
+          // 1. Background
+          canvasCtx.fillStyle = '#0f172a'; // Dark Blue
+          canvasCtx.fillRect(0,0,width,height);
 
-          // Text
+          // 2. Robot Face (Programmatic drawing to prevent black screen)
+          const cx = width / 2;
+          const cy = height / 2 - 50;
+          
+          // Head
+          canvasCtx.fillStyle = '#cbd5e1';
+          canvasCtx.beginPath();
+          canvasCtx.roundRect(cx - 100, cy - 100, 200, 200, 30);
+          canvasCtx.fill();
+
+          // Visor (Eyes)
+          canvasCtx.fillStyle = '#1e293b';
+          canvasCtx.fillRect(cx - 80, cy - 50, 160, 50);
+
+          // Glowing Eyes
+          canvasCtx.fillStyle = '#22d3ee'; // Cyan glow
+          canvasCtx.shadowColor = '#22d3ee';
+          canvasCtx.shadowBlur = 20;
+          const eyeH = 10 + (volume / 10); // React to audio
+          canvasCtx.fillRect(cx - 60, cy - 35, 40, eyeH); // Left
+          canvasCtx.fillRect(cx + 20, cy - 35, 40, eyeH); // Right
+          canvasCtx.shadowBlur = 0;
+
+          // Mouth (Grid)
+          canvasCtx.fillStyle = '#334155';
+          canvasCtx.fillRect(cx - 60, cy + 40, 120, 30);
+          // Talking Bar
+          canvasCtx.fillStyle = '#f87171';
+          const mouthW = (volume / 255) * 100;
+          canvasCtx.fillRect(cx - mouthW/2, cy + 45, mouthW, 20);
+
+          // 3. Subtitles
           if (text) {
-             canvasCtx.font='bold 32px sans-serif';
-             canvasCtx.fillStyle='#fff';
+             canvasCtx.font='bold 24px Arial';
+             canvasCtx.fillStyle='#ffffff';
              canvasCtx.textAlign = 'center';
              canvasCtx.shadowColor="black";
              canvasCtx.shadowBlur=4;
 
              const words = text.split(' ');
-             const p = elapsed / duration;
+             const p = Math.min(elapsed / duration, 1);
              const idx = Math.floor(p * words.length);
-             const segment = words.slice(Math.max(0, idx-3), idx+4).join(' ');
+             // Show 5 words at a time
+             const segment = words.slice(Math.max(0, idx-2), idx+3).join(' ');
              
              canvasCtx.fillText(segment, width/2, height - 150);
              canvasCtx.shadowBlur=0;
           }
           
-          canvasCtx.font='bold 32px monospace';
-          canvasCtx.fillStyle='#667eea';
-          canvasCtx.fillText("ANON VOX", width/2, 80);
+          // 4. Branding
+          canvasCtx.font='bold 20px monospace';
+          canvasCtx.fillStyle='#475569';
+          canvasCtx.fillText("ANON VOX", width/2, height - 50);
 
           requestAnimationFrame(draw);
         };
@@ -363,12 +389,12 @@ export default function AnonymousVoiceApp() {
     });
   };
 
-  // --- STEP 4 & 5: UPLOAD & SAVE ---
+  // --- STEP 4: UPLOAD & SAVE ---
   const uploadVideo = async (blob) => {
-    // If we recorded MP4, keep it. If WebM, keep it. Don't lie to the DB.
-    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-    const fileName = `voicerss-${Date.now()}.${ext}`;
+    // Force .mp4 extension for WhatsApp compatibility
+    const fileName = `anonvox-${Date.now()}.mp4`;
     
+    // We upload with the blob's actual MIME type, but name it .mp4
     const { error } = await supabase.storage.from('voices').upload(fileName, blob, {
         contentType: blob.type 
     });
@@ -386,7 +412,7 @@ export default function AnonymousVoiceApp() {
     if (error) throw new Error("DB Save Failed: " + error.message);
   };
 
-  // --- NATIVE SHARE (SMART FALLBACK) ---
+  // --- SHARE (Force MP4 Extension) ---
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share) {
       alert("Sharing not supported. Downloading...");
@@ -398,43 +424,29 @@ export default function AnonymousVoiceApp() {
       const response = await fetch(videoUrl);
       const blob = await response.blob();
       
-      // DETERMINE ACTUAL TYPE
-      const isMp4 = blob.type.includes('mp4');
-      const isWebm = blob.type.includes('webm');
+      // WhatsApp trick: Even if it's WebM, naming it .mp4 often helps on Android
+      // On iOS, it creates a true MP4 so it's fine.
+      const file = new File([blob], `anonvox-${msgId}.mp4`, { type: 'video/mp4' });
       
-      let file;
-      
-      if (isMp4) {
-          // It's a real MP4 (iOS or Modern Chrome), safe to share as video
-          file = new File([blob], `msg-${msgId}.mp4`, { type: 'video/mp4' });
-      } else {
-          // It's WebM (Android Fallback). 
-          // STRATEGY: Share as .webm. WhatsApp will treat it as a "Document".
-          // This is better than sharing a broken "video" that won't play.
-          file = new File([blob], `msg-${msgId}.webm`, { type: 'video/webm' });
-      }
-
-      // Check if sharing this specific file is supported
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      // Share FILES only (no text/url) to ensure it sends as media
+      if (navigator.canShare({ files: [file] })) {
           await navigator.share({ files: [file] });
       } else {
-          // If strict sharing fails, try the "Spoof" method as a last resort
-          // (Renaming WebM to MP4)
-          console.warn("Falling back to MP4 spoofing");
-          const spoofFile = new File([blob], `msg-${msgId}.mp4`, { type: 'video/mp4' });
-          await navigator.share({ files: [spoofFile] });
+          // Fallback: Share as original MIME type
+          const safeFile = new File([blob], `anonvox-${msgId}.mp4`, { type: blob.type });
+          await navigator.share({ files: [safeFile] });
       }
-      
     } catch (e) { 
         console.error(e); 
         if (e.name !== 'AbortError') {
-            alert("Share failed. Downloading file instead.");
+            alert("Could not open share menu. Downloading instead.");
             handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
         }
     } 
     finally { setSharingId(null); }
   };
 
+  // --- RECORDING ---
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
