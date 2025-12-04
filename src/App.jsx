@@ -136,22 +136,18 @@ export default function AnonymousVoiceApp() {
       console.log("Transcribed Text:", text);
 
       // 2. GENERATING VOICE (VoiceRSS)
-      setPipeline({ active: true, step: 'voice', progress: 30, error: null });
-      const cleanTTSBlob = await generateVoiceRSSTTS(text);
+      setPipeline({ active: true, step: 'voice', progress: 40, error: null });
+      const ttsBlob = await generateVoiceRSSTTS(text);
       
-      // 3. ROBOTIFYING (Web Audio API)
-      setPipeline({ active: true, step: 'robot', progress: 50, error: null });
-      const robotAudioBlob = await applyRobotEffect(cleanTTSBlob);
-
-      // 4. GENERATING VIDEO
+      // 3. GENERATING VIDEO (Directly from TTS)
       setPipeline({ active: true, step: 'video', progress: 70, error: null });
-      const videoBlob = await generateVideoBlob(robotAudioBlob, text);
+      const videoBlob = await generateVideoBlob(ttsBlob, text);
 
-      // 5. UPLOADING
+      // 4. UPLOADING
       setPipeline({ active: true, step: 'sending', progress: 90, error: null });
       const publicUrl = await uploadVideo(videoBlob);
       
-      // 6. SAVING
+      // 5. SAVING
       await saveMessageToDB(publicUrl, text);
 
       setPipeline({ active: true, step: 'sent', progress: 100, error: null });
@@ -205,14 +201,13 @@ export default function AnonymousVoiceApp() {
   const generateVoiceRSSTTS = async (text) => {
     if (!VOICERSS_KEY) throw new Error("Missing VoiceRSS Key");
 
-    // Using POST to support longer text
     const params = new URLSearchParams();
     params.append('key', VOICERSS_KEY);
     params.append('src', text);
     params.append('hl', 'en-us');
-    params.append('v', 'Mike'); // Voices: Mike, Alice, etc.
-    params.append('r', '0');    // Rate: 0 is normal
-    params.append('c', 'MP3');  // Codec
+    params.append('v', 'Mike'); // 'Mike' is usually standard, somewhat robotic
+    params.append('r', '0');
+    params.append('c', 'MP3');
     params.append('f', '44khz_16bit_stereo');
 
     const response = await fetch('https://api.voicerss.org/', {
@@ -227,65 +222,7 @@ export default function AnonymousVoiceApp() {
     return blob;
   };
 
-  // --- STEP 3: APPLY ROBOT EFFECT (Web Audio API) ---
-  const applyRobotEffect = async (inputBlob) => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const arrayBuffer = await inputBlob.arrayBuffer();
-        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        
-        const dest = ctx.createMediaStreamDestination();
-        
-        // --- ROBOT SETTINGS ---
-        // Since VoiceRSS 'Mike' is already deep, we adjust slightly
-        source.detune.value = -300; 
-
-        // Ring Modulator Effect (Classic Robot)
-        const oscillator = ctx.createOscillator();
-        oscillator.frequency.value = 30; // Hz flutter
-        oscillator.type = 'square';
-        const oscGain = ctx.createGain();
-        oscGain.gain.value = 0.1; // Mix amount
-        
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.2;
-
-        source.connect(gainNode);
-        gainNode.connect(dest);
-
-        // Optional: Mix in oscillator for "buzz"
-        // oscillator.connect(oscGain);
-        // oscGain.connect(gainNode.gain); 
-        // oscillator.start();
-
-        const recorder = new MediaRecorder(dest.stream);
-        const chunks = [];
-
-        recorder.ondataavailable = e => chunks.push(e.data);
-        recorder.onstop = () => {
-            const blob = new Blob(chunks, { type: 'audio/webm' });
-            ctx.close();
-            resolve(blob);
-        };
-
-        recorder.start();
-        source.start(0);
-        
-        setTimeout(() => {
-            if(recorder.state === 'recording') recorder.stop();
-        }, (audioBuffer.duration * 1000) + 300);
-
-      } catch (e) {
-        reject(e);
-      }
-    });
-  };
-
-  // --- STEP 4: VIDEO GENERATION ---
+  // --- STEP 3: VIDEO GENERATION ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -397,7 +334,7 @@ export default function AnonymousVoiceApp() {
     });
   };
 
-  // --- STEP 5 & 6: UPLOAD & SAVE ---
+  // --- STEP 4 & 5: UPLOAD & SAVE ---
   const uploadVideo = async (blob) => {
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
     const fileName = `voicerss-${Date.now()}.${ext}`;
@@ -534,7 +471,6 @@ export default function AnonymousVoiceApp() {
                     <h2 className="text-2xl font-black uppercase tracking-tighter mb-2">
                       {pipeline.step === 'transcribing' && "Understanding Audio..."}
                       {pipeline.step === 'voice' && "Generating Voice (VoiceRSS)..."}
-                      {pipeline.step === 'robot' && "Applying Robot Effects..."}
                       {pipeline.step === 'video' && "Generating Video..."}
                       {pipeline.step === 'sending' && "Sending..."}
                       {pipeline.step === 'sent' && "Sent!"}
@@ -561,7 +497,7 @@ export default function AnonymousVoiceApp() {
                         <button onClick={() => { const a = new Audio(recordingState.rawUrl); a.play(); }} className="bg-white p-2 rounded-full shadow-sm"><Play className="w-4 h-4 text-black"/></button>
                       </div>
                       <div className="text-xs text-gray-500 text-center">
-                        This audio will be transcribed, converted to speech, robotified, and then sent as a video.
+                        This audio will be transcribed, converted to speech, and then sent as a video.
                       </div>
                     </div>
 
