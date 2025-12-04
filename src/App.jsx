@@ -2,13 +2,16 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
   Square, Trash2, Film, Download, Heart, Zap, Ghost, Instagram, 
-  AlertCircle, Loader2, X, MessageCircle, Music2 
+  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit 
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // --- CONFIGURATION ---
 const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
+
+// !!! IMPORTANT: PUT YOUR ASSEMBLY AI KEY HERE !!!
+const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -47,7 +50,8 @@ export default function AnonymousVoiceApp() {
   const [messages, setMessages] = useState([]);
   const [referralCount, setReferralCount] = useState(0);
   const [genState, setGenState] = useState({ id: null, progress: 0, status: '' });
-  const [sharingId, setSharingId] = useState(null); // Track which video is currently being shared
+  const [sharingId, setSharingId] = useState(null);
+  const [transcribing, setTranscribing] = useState(false);
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
@@ -117,77 +121,92 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-// --- CRITICAL: NATIVE FILE SHARE ---
+  // --- ASSEMBLY AI TRANSCRIPTION ---
+  const handleAssemblyTranscribe = async () => {
+    if (!ASSEMBLY_KEY) {
+      alert("Please add your AssemblyAI API Key in the code to use this feature!");
+      return;
+    }
+    if (!recordingState.blob) return;
+
+    setTranscribing(true);
+    setStatus({ loading: true, error: null });
+
+    try {
+        // 1. Upload
+        const response = await fetch('https://api.assemblyai.com/v2/upload', {
+            method: 'POST',
+            headers: { 'Authorization': ASSEMBLY_KEY },
+            body: recordingState.blob
+        });
+        const uploadData = await response.json();
+        
+        // 2. Transcribe
+        const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
+            method: 'POST',
+            headers: { 
+                'Authorization': ASSEMBLY_KEY,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ audio_url: uploadData.upload_url })
+        });
+        const transcriptData = await transcriptResponse.json();
+        const transcriptId = transcriptData.id;
+
+        // 3. Poll
+        const checkStatus = async () => {
+            const pollingResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+                headers: { 'Authorization': ASSEMBLY_KEY }
+            });
+            const result = await pollingResponse.json();
+
+            if (result.status === 'completed') {
+                setRecordingState(prev => ({ ...prev, transcript: result.text || "" }));
+                setTranscribing(false);
+                setStatus({ loading: false, error: null });
+            } else if (result.status === 'error') {
+                throw new Error("Transcription failed");
+            } else {
+                setTimeout(checkStatus, 1000);
+            }
+        };
+
+        checkStatus();
+
+    } catch (err) {
+        console.error(err);
+        setTranscribing(false);
+        setStatus({ loading: false, error: 'AI Transcription failed' });
+    }
+  };
+
+  // --- NATIVE SHARE ---
   const handleNativeShare = async (videoUrl, msgId) => {
-    // Basic capability check
-    if (!navigator.share) {
-      alert("Sharing is not supported on this browser. Downloading instead.");
+    if (!navigator.share || !navigator.canShare) {
+      alert("Sharing not supported. Downloading instead...");
       handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       return;
     }
 
     setSharingId(msgId);
-    
     try {
-      // Fetch video with proper CORS headers
-      const response = await fetch(videoUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'video/*'
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch video: ${response.status}`);
-      }
-      
+      const response = await fetch(videoUrl);
       const blob = await response.blob();
-      console.log('Fetched blob:', blob.type, blob.size);
+      const isMp4 = blob.type.includes('mp4');
+      const ext = isMp4 ? 'mp4' : 'webm'; 
+      const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
+      
+      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
+      const shareData = { files: [file] };
 
-      // Force MP4 mime type if blob type is empty or generic
-      let mimeType = blob.type;
-      if (!mimeType || mimeType === 'application/octet-stream' || mimeType === '') {
-        mimeType = 'video/mp4';
-      }
-
-      const ext = mimeType.includes('webm') ? 'webm' : 'mp4';
-      
-      // Create file with explicit type
-      const file = new File([blob], `anonvox-${msgId}.${ext}`, { 
-        type: mimeType,
-        lastModified: Date.now()
-      });
-      
-      console.log('Created file:', file.name, file.type, file.size);
-
-      // Share with BOTH file AND text for WhatsApp compatibility
-      // WhatsApp requires text to be present when sharing media
-      const shareData = { 
-        files: [file],
-        text: '🎤 Anonymous voice message from AnonVox' // WhatsApp needs this!
-      };
-      
-      // Check if this specific data can be shared
-      if (navigator.canShare && !navigator.canShare(shareData)) {
-        console.warn('Device cannot share this file type');
-        alert("Your device doesn't support sharing this video format. Downloading instead.");
-        handleDownload(videoUrl, file.name);
-        return;
-      }
-
-      // Attempt to share
-      await navigator.share(shareData);
-      console.log('Share successful');
-      
-    } catch (error) {
-      console.error('Share error:', error);
-      
-      // User cancelled - don't show error
-      if (error.name === 'AbortError' || error.name === 'NotAllowedError') {
-        console.log('User cancelled share');
+      if (navigator.canShare(shareData)) {
+        await navigator.share(shareData);
       } else {
-        // Real error - fallback to download
-        alert(`Share failed: ${error.message}. Downloading instead.`);
+        throw new Error("Device refused file share.");
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+        alert("Could not share file directly. Downloading instead...");
         handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       }
     } finally {
@@ -281,6 +300,7 @@ export default function AnonymousVoiceApp() {
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
       
+      // Native Speech Recognition
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
         const r = new SR(); r.continuous = true; r.interimResults = true;
@@ -325,7 +345,7 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- VIDEO GENERATION (With MP4 Upload Support) ---
+  // --- VIDEO GENERATION ---
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
     setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
@@ -333,7 +353,6 @@ export default function AnonymousVoiceApp() {
     let ctx = null;
 
     try {
-      // 1. Fetch & Decode Audio
       const response = await fetch(remoteAudioUrl);
       if (!response.ok) throw new Error("Failed to fetch audio file");
       const audioBufferData = await response.arrayBuffer();
@@ -341,7 +360,6 @@ export default function AnonymousVoiceApp() {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await ctx.decodeAudioData(audioBufferData);
 
-      // 2. Setup Audio Graph (Effects)
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       const dest = ctx.createMediaStreamDestination();
@@ -359,7 +377,6 @@ export default function AnonymousVoiceApp() {
       gainNode.connect(analyser);
       gainNode.connect(dest);
 
-      // 3. Setup Canvas for Video
       const width = 1080;
       const height = 1920;
       const canvas = document.createElement('canvas');
@@ -373,12 +390,7 @@ export default function AnonymousVoiceApp() {
         ...dest.stream.getAudioTracks()
       ]);
       
-      // 4. Determine Output Format (MP4 preferred for sharing)
-      const mimeTypes = [
-          'video/mp4', 
-          'video/webm;codecs=h264', 
-          'video/webm;codecs=vp8,opus'
-      ];
+      const mimeTypes = ['video/mp4', 'video/webm;codecs=h264', 'video/webm;codecs=vp8,opus'];
       const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
       const mediaRecorder = new MediaRecorder(mixedStream, { 
@@ -392,7 +404,6 @@ export default function AnonymousVoiceApp() {
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const duration = audioBuffer.duration / voiceConfig.speed;
       
-      // 5. Processing Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
@@ -410,14 +421,12 @@ export default function AnonymousVoiceApp() {
            analyser.getByteFrequencyData(dataArray);
            const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
            
-           // Background
            const grad = canvasCtx.createLinearGradient(0,0,0,height);
            grad.addColorStop(0, '#0f172a');
            grad.addColorStop(1, voiceConfig.color);
            canvasCtx.fillStyle = grad;
            canvasCtx.fillRect(0,0,width,height);
 
-           // Avatar Animation
            const t = Date.now()/1000;
            canvasCtx.save();
            canvasCtx.translate(width/2, height/2);
@@ -438,7 +447,6 @@ export default function AnonymousVoiceApp() {
            canvasCtx.fillRect(-100,100,200,mouth);
            canvasCtx.restore();
 
-           // Text Overlay
            canvasCtx.font='bold 60px sans-serif';
            canvasCtx.fillStyle='rgba(255,255,255,0.8)';
            canvasCtx.textAlign='center';
@@ -460,7 +468,6 @@ export default function AnonymousVoiceApp() {
         draw();
       });
 
-      // 6. Upload & Save
       setGenState({ id: msgId, progress: 100, status: 'Uploading...' });
       
       const videoBlob = new Blob(chunks, { type: selectedMime });
@@ -472,7 +479,6 @@ export default function AnonymousVoiceApp() {
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
       
-      // Update Database
       const { data: updatedData, error: dbErr } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -481,7 +487,7 @@ export default function AnonymousVoiceApp() {
       
       if (dbErr || !updatedData || updatedData.length === 0) {
         console.error("DB Update Failed", dbErr);
-        alert("Video generated, but failed to save to history (Check RLS permissions).");
+        alert("Video generated, but failed to save. Check permissions.");
       }
       
       setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
@@ -496,7 +502,6 @@ export default function AnonymousVoiceApp() {
     }
   }, [genState.id]);
 
-  // --- RENDERERS ---
   const renderError = () => (
     status.error && (
       <div className="fixed top-4 left-4 right-4 z-50 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between shadow-lg max-w-lg mx-auto">
@@ -555,7 +560,27 @@ export default function AnonymousVoiceApp() {
                     <div className="flex items-center gap-3"><Check className="text-purple-600"/><span className="font-bold text-sm">Recorded</span></div>
                     <button onClick={() => { const a = new Audio(recordingState.url); a.play(); }}><Play className="text-gray-700"/></button>
                   </div>
-                  <button onClick={handleSendMessage} disabled={status.loading} className="w-full py-4 bg-black text-white rounded-xl font-bold flex justify-center">{status.loading ? <Loader2 className="animate-spin"/> : 'Send Now'}</button>
+                  
+                  {/* --- TRANSCRIPTION SECTION --- */}
+                  <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-500 uppercase">Message Text (Edit if needed)</label>
+                      <textarea 
+                        className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm min-h-[80px]"
+                        value={recordingState.transcript}
+                        onChange={(e) => setRecordingState(p => ({...p, transcript: e.target.value}))}
+                        placeholder="Transcription will appear here..."
+                      />
+                      <button 
+                        onClick={handleAssemblyTranscribe}
+                        disabled={transcribing}
+                        className="text-xs font-bold text-purple-600 flex items-center gap-1 hover:underline"
+                      >
+                         {transcribing ? <Loader2 className="w-3 h-3 animate-spin"/> : <BrainCircuit className="w-3 h-3"/>}
+                         {transcribing ? 'AI is thinking...' : 'Fix text with AI (AssemblyAI)'}
+                      </button>
+                  </div>
+
+                  <button onClick={handleSendMessage} disabled={status.loading || transcribing} className="w-full py-4 bg-black text-white rounded-xl font-bold flex justify-center">{status.loading ? <Loader2 className="animate-spin"/> : 'Send Now'}</button>
                   <button onClick={() => setRecordingState({ isRecording: false, time: 0, blob: null, url: null, transcript: '' })} className="w-full py-3 text-red-500 font-bold text-sm">Discard</button>
                 </div>
               )}
@@ -605,7 +630,6 @@ export default function AnonymousVoiceApp() {
                            <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
                            
                            <div className="grid grid-cols-2 gap-2">
-                             {/* --- NATIVE SHARE BUTTON --- */}
                              <button 
                                onClick={() => handleNativeShare(msg.video_url, msg.id)} 
                                disabled={sharingId === msg.id}
@@ -655,7 +679,7 @@ export default function AnonymousVoiceApp() {
             <button onClick={handleAuth} disabled={status.loading} className="w-full py-4 bg-black text-white rounded-xl font-bold mb-4">{status.loading?<Loader2 className="animate-spin mx-auto"/>:(authMode==='login'?'Log In':'Sign Up')}</button>
             <button onClick={()=>setView('landing')} className="w-full text-gray-400 text-sm">Cancel</button>
           </div>
-       </div>
+        </div>
       )}
     </>
   );
