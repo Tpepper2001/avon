@@ -47,7 +47,7 @@ export default function AnonymousVoiceApp() {
   const [messages, setMessages] = useState([]);
   const [referralCount, setReferralCount] = useState(0);
   const [genState, setGenState] = useState({ id: null, progress: 0, status: '' });
-  const [sharingId, setSharingId] = useState(null);
+  const [sharingId, setSharingId] = useState(null); // Track which video is currently being shared
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
@@ -117,127 +117,54 @@ export default function AnonymousVoiceApp() {
     }
   };
 
- // --- DIRECT VIDEO DOWNLOAD + SHARE WITH FILE ---
-const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
-  setSharingId(msgId);
-
-  try {
-    // 1. Fetch video safely
-    const response = await fetch(videoUrl);
-    if (!response.ok) throw new Error("Video fetch failed");
-
-    const blob = await response.blob();
-    const fileName = `anonvox-${msgId}.mp4`;
-    const fileType = "video/mp4";
-
-    // Create File + Object URL
-    const videoFile = new File([blob], fileName, { type: fileType });
-    const blobUrl = URL.createObjectURL(blob);
-
-    const isSocial =
-      platform === "whatsapp" ||
-      platform === "instagram" ||
-      platform === "tiktok";
-
-    // -----------------------------------------------------
-    // 2. Attempt direct Web Share API for social platforms
-    // -----------------------------------------------------
-    if (isSocial) {
-      if (navigator.share && navigator.canShare?.({ files: [videoFile] })) {
-        try {
-          await navigator.share({
-            files: [videoFile],
-            title: "AnonVox",
-            text: "Check out this anonymous voice message! 🎤🤖",
-          });
-
-          URL.revokeObjectURL(blobUrl);
-          return;
-        } catch (err) {
-          if (err.name === "AbortError") {
-            URL.revokeObjectURL(blobUrl);
-            return;
-          }
-          console.log("Web Share failed → fallback:", err);
-        }
-      }
-    }
-
-    // -----------------------------------------------------
-    // 3. Fallback: force download first
-    // -----------------------------------------------------
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    // -----------------------------------------------------
-    // 4. Open the relevant social app AFTER download
-    // -----------------------------------------------------
-    if (isSocial) {
-      setTimeout(() => {
-        if (platform === "whatsapp") {
-          const msg = encodeURIComponent(
-            "Check out this anonymous voice message! 🎤🤖"
-          );
-          window.open(`https://wa.me/?text=${msg}`, "_blank");
-
-          alert(
-            "✅ Video downloaded!\nWhatsApp is opening now.\nAttach the video you just downloaded."
-          );
-        }
-
-        if (platform === "instagram") {
-          alert(
-            "✅ Video downloaded!\nTo share on Instagram:\n1. Open Instagram\n2. Tap + (Create)\n3. Choose the video\n4. Post as Story or Reel"
-          );
-          window.open("instagram://camera", "_blank");
-        }
-
-        if (platform === "tiktok") {
-          alert(
-            "✅ Video downloaded!\nTo share on TikTok:\n1. Open TikTok\n2. Tap +\n3. Upload the downloaded video"
-          );
-        }
-      }, 500);
-
-      URL.revokeObjectURL(blobUrl);
+  // --- CRITICAL: NATIVE FILE SHARE ---
+  // This function ensures the actual FILE is shared, not just a link.
+  const handleNativeShare = async (videoUrl, msgId) => {
+    // 1. Check browser capabilities
+    if (!navigator.share || !navigator.canShare) {
+      alert("Sharing is not supported on this browser/device. Saving file instead.");
+      handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       return;
     }
 
-    // -----------------------------------------------------
-    // 5. Generic download share (desktop & mobile fallback)
-    // -----------------------------------------------------
-    if (navigator.share) {
-      setTimeout(async () => {
-        try {
-          await navigator.share({
-            files: [videoFile],
-            title: "AnonVox",
-            text: "Anonymous voice message 🎤",
-          });
-        } catch (err) {
-          if (err.name !== "AbortError") {
-            alert("✅ Video downloaded to your device!");
-          }
-        } finally {
-          URL.revokeObjectURL(blobUrl);
-        }
-      }, 400);
-    } else {
-      alert("✅ Video downloaded to your device!");
-      URL.revokeObjectURL(blobUrl);
-    }
-  } catch (err) {
-    console.error("Share error:", err);
-    alert("⚠️ Operation failed. Please try again.");
-  } finally {
-    setSharingId(null);
-  }
-};
+    setSharingId(msgId);
+    
+    try {
+      // 2. Fetch the video blob from Supabase
+      const response = await fetch(videoUrl);
+      if (!response.ok) throw new Error("Could not fetch video file");
+      const blob = await response.blob();
 
+      // 3. Determine MIME type (Prioritize MP4 for iOS/WhatsApp)
+      const isMp4 = blob.type.includes('mp4');
+      const ext = isMp4 ? 'mp4' : 'webm';
+      const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
+
+      // 4. Create a File object
+      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
+      const shareData = { files: [file] };
+
+      // 5. SHARE: We deliberately do NOT include 'text' or 'url' fields.
+      // Including text often causes iOS/WhatsApp to ignore the file attachment.
+      if (navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+      } else {
+        // Fallback if device supports sharing but refuses this file type
+        console.warn("Device refused file share, falling back to download");
+        alert("This app can't share this video format directly. Downloading instead.");
+        handleDownload(videoUrl, `anonvox-${msgId}.${ext}`);
+      }
+    } catch (error) {
+      // Ignore AbortError (user cancelled the share sheet)
+      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+        console.error('Share failed:', error);
+        alert("Share failed. Downloading file instead.");
+        handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
+      }
+    } finally {
+      setSharingId(null);
+    }
+  };
 
   const fetchMessages = useCallback(async (username) => {
     try {
@@ -369,7 +296,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- VIDEO GENERATION (UPDATED FOR MP4 SUPPORT) ---
+  // --- VIDEO GENERATION (With MP4 Upload Support) ---
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
     setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
@@ -377,6 +304,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
     let ctx = null;
 
     try {
+      // 1. Fetch & Decode Audio
       const response = await fetch(remoteAudioUrl);
       if (!response.ok) throw new Error("Failed to fetch audio file");
       const audioBufferData = await response.arrayBuffer();
@@ -384,6 +312,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await ctx.decodeAudioData(audioBufferData);
 
+      // 2. Setup Audio Graph (Effects)
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       const dest = ctx.createMediaStreamDestination();
@@ -401,6 +330,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
       gainNode.connect(analyser);
       gainNode.connect(dest);
 
+      // 3. Setup Canvas for Video
       const width = 1080;
       const height = 1920;
       const canvas = document.createElement('canvas');
@@ -414,16 +344,16 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
         ...dest.stream.getAudioTracks()
       ]);
       
-      // CHECK IF MP4 IS SUPPORTED (Better for Sharing)
-      let mimeType = 'video/webm;codecs=vp8,opus';
-      if (MediaRecorder.isTypeSupported('video/mp4')) {
-        mimeType = 'video/mp4';
-      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
-        mimeType = 'video/webm;codecs=h264';
-      }
+      // 4. Determine Output Format (MP4 preferred for sharing)
+      const mimeTypes = [
+          'video/mp4', 
+          'video/webm;codecs=h264', 
+          'video/webm;codecs=vp8,opus'
+      ];
+      const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
       const mediaRecorder = new MediaRecorder(mixedStream, { 
-        mimeType: mimeType,
+        mimeType: selectedMime,
         videoBitsPerSecond: 3000000 
       });
       
@@ -433,6 +363,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const duration = audioBuffer.duration / voiceConfig.speed;
       
+      // 5. Processing Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
@@ -450,12 +381,14 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
            analyser.getByteFrequencyData(dataArray);
            const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
            
+           // Background
            const grad = canvasCtx.createLinearGradient(0,0,0,height);
            grad.addColorStop(0, '#0f172a');
            grad.addColorStop(1, voiceConfig.color);
            canvasCtx.fillStyle = grad;
            canvasCtx.fillRect(0,0,width,height);
 
+           // Avatar Animation
            const t = Date.now()/1000;
            canvasCtx.save();
            canvasCtx.translate(width/2, height/2);
@@ -476,6 +409,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
            canvasCtx.fillRect(-100,100,200,mouth);
            canvasCtx.restore();
 
+           // Text Overlay
            canvasCtx.font='bold 60px sans-serif';
            canvasCtx.fillStyle='rgba(255,255,255,0.8)';
            canvasCtx.textAlign='center';
@@ -497,17 +431,19 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
         draw();
       });
 
-      setGenState({ id: msgId, progress: 100, status: 'Finalizing...' });
+      // 6. Upload & Save
+      setGenState({ id: msgId, progress: 100, status: 'Uploading...' });
       
-      const finalBlob = new Blob(chunks, { type: mimeType });
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const videoBlob = new Blob(chunks, { type: selectedMime });
+      const ext = selectedMime.includes('mp4') ? 'mp4' : 'webm';
       const fileName = `video-${msgId}-${Date.now()}.${ext}`;
       
-      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, finalBlob);
+      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, videoBlob);
       if (upErr) throw upErr;
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
       
+      // Update Database
       const { data: updatedData, error: dbErr } = await supabase
         .from('messages')
         .update({ video_url: publicUrl })
@@ -516,7 +452,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
       
       if (dbErr || !updatedData || updatedData.length === 0) {
         console.error("DB Update Failed", dbErr);
-        alert("Video generated! But we couldn't save it to your history. Please check your Database Permissions (Row Level Security).");
+        alert("Video generated, but failed to save to history (Check RLS permissions).");
       }
       
       setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
@@ -524,7 +460,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
 
     } catch (err) {
        console.error(err);
-       setStatus({ ...status, error: 'Video failed: ' + err.message });
+       setStatus({ ...status, error: 'Video generation failed: ' + err.message });
     } finally {
        if (ctx) ctx.close();
        setGenState({ id: null, progress: 0, status: '' });
@@ -640,7 +576,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
                            <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
                            
                            <div className="grid grid-cols-2 gap-2">
-                             {/* SHARE BUTTON */}
+                             {/* --- NATIVE SHARE BUTTON --- */}
                              <button 
                                onClick={() => handleNativeShare(msg.video_url, msg.id)} 
                                disabled={sharingId === msg.id}
@@ -690,7 +626,7 @@ const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
             <button onClick={handleAuth} disabled={status.loading} className="w-full py-4 bg-black text-white rounded-xl font-bold mb-4">{status.loading?<Loader2 className="animate-spin mx-auto"/>:(authMode==='login'?'Log In':'Sign Up')}</button>
             <button onClick={()=>setView('landing')} className="w-full text-gray-400 text-sm">Cancel</button>
           </div>
-        </div>
+       </div>
       )}
     </>
   );
