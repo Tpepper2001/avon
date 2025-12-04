@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, Play, Send, Check, Inbox, Share2, LogOut, User, Sparkles, 
   Square, Trash2, Film, Download, Heart, Zap, Ghost, Instagram, 
-  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit 
+  AlertCircle, Loader2, X, MessageCircle, Music2, BrainCircuit, Cpu 
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -31,8 +31,6 @@ const AUDIO_CONSTRAINTS = {
 
 const VOICE_TYPES = {
   ROBOT: { id: 'robot', name: 'Bot', color: '#667eea', detune: -800, speed: 1.0, req: 0 },
-  ALIEN: { id: 'alien', name: 'Alien', color: '#10B981', detune: 1200, speed: 1.2, req: 3 },
-  DEMON: { id: 'demon', name: 'Demon', color: '#EF4444', detune: -1800, speed: 0.8, req: 5 },
 };
 
 const MESSAGE_TEMPLATES = [
@@ -48,53 +46,60 @@ export default function AnonymousVoiceApp() {
   const [authMode, setAuthMode] = useState('login');
   const [activeTab, setActiveTab] = useState('inbox');
   const [formData, setFormData] = useState({ username: '', password: '', recipient: '' });
-  const [recordingState, setRecordingState] = useState({ isRecording: false, time: 0, blob: null, url: null, transcript: '', error: null });
-  const [status, setStatus] = useState({ loading: false, error: null, success: null });
+  
+  // Recording State
+  const [recordingState, setRecordingState] = useState({ 
+    isRecording: false, 
+    time: 0, 
+    blob: null, 
+    url: null
+  });
+
+  // Pipeline State (The Progress Bar Logic)
+  const [pipeline, setPipeline] = useState({
+    active: false,
+    step: '', // 'transcribing', 'robotic', 'video', 'sending', 'sent'
+    progress: 0,
+    error: null
+  });
+
   const [messages, setMessages] = useState([]);
-  const [referralCount, setReferralCount] = useState(0);
-  const [genState, setGenState] = useState({ id: null, progress: 0, status: '' });
   const [sharingId, setSharingId] = useState(null);
-  const [transcribing, setTranscribing] = useState(false);
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const streamRef = useRef(null);
-  const recognitionRef = useRef(null);
 
   // --- INIT ---
   useEffect(() => {
     const savedUser = safeJSONParse(localStorage.getItem('anon-voice-user'));
-    const savedRefs = parseInt(localStorage.getItem('anon-refs') || '0');
-    const params = new URLSearchParams(window.location.search);
-    const sendTo = params.get('send_to');
-    const refBy = params.get('ref');
-
-    if (refBy && refBy !== savedUser?.username) localStorage.setItem('referred_by', refBy);
-    setReferralCount(savedRefs);
-
-    if (sendTo) {
-      setFormData(prev => ({ ...prev, recipient: sendTo }));
-      setView('recorder');
-    } else if (savedUser) {
+    if (savedUser) {
       setUser(savedUser);
       setView('inbox');
       fetchMessages(savedUser.username);
     }
+    
+    const params = new URLSearchParams(window.location.search);
+    const sendTo = params.get('send_to');
+    if (sendTo) {
+      setFormData(prev => ({ ...prev, recipient: sendTo }));
+      setView('recorder');
+    }
+    
     return () => cleanupRecordingResources();
   }, []);
 
   useEffect(() => {
     if (!user || view !== 'inbox') return;
-    const interval = setInterval(() => { if (!genState.id) fetchMessages(user.username); }, REFRESH_INTERVAL);
+    const interval = setInterval(() => { fetchMessages(user.username); }, REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, [user, view, genState.id]);
+  }, [user, view]);
 
   useEffect(() => {
     if (recordingState.isRecording && recordingState.time >= MAX_RECORDING_TIME) {
       stopRecording();
-      setStatus({ ...status, error: 'Max recording time reached' });
     }
   }, [recordingState.time, recordingState.isRecording]);
 
@@ -104,7 +109,6 @@ export default function AnonymousVoiceApp() {
   const cleanupRecordingResources = () => {
     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
     if (timerRef.current) clearInterval(timerRef.current);
-    if (recognitionRef.current) recognitionRef.current.stop();
   };
 
   const handleDownload = async (url, filename) => {
@@ -120,297 +124,99 @@ export default function AnonymousVoiceApp() {
       document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
     } catch (e) {
-      alert("Download failed. Please try again.");
+      alert("Download failed.");
     }
   };
 
   // ==========================================
-  // --- CORE FUNCTIONALITY ---
+  // --- THE MASTER PIPELINE ---
   // ==========================================
 
-  // 1. Transcription (AssemblyAI)
-  const handleAssemblyTranscribe = async () => {
-    if (!ASSEMBLY_KEY || ASSEMBLY_KEY === '') {
-      alert("⚠️ ERROR: Missing AssemblyAI API Key.\n\nPlease add your key in the code (line 17) to make this button work.");
-      return;
-    }
-    
-    if (!recordingState.blob) {
-      alert("No audio recorded yet!");
-      return;
-    }
+  const startPipeline = async () => {
+    if (!recordingState.blob) return;
+    if (!ASSEMBLY_KEY) { alert("Missing AssemblyAI API Key"); return; }
 
-    setTranscribing(true);
-    // Show user something is happening
-    setRecordingState(prev => ({ ...prev, transcript: "⏳ Uploading audio to AI..." }));
+    setPipeline({ active: true, step: 'transcribing', progress: 10, error: null });
 
     try {
-        console.log("Starting AssemblyAI Upload...");
+      // 1. TRANSCRIBING...
+      const text = await performTranscription(recordingState.blob);
+      setPipeline({ active: true, step: 'robotic', progress: 40, error: null });
+      
+      // 2. TURNING TO ROBOTIC VOICE... (Simulated delay for effect, actual processing happens in video step)
+      await new Promise(r => setTimeout(r, 1500)); 
+      setPipeline({ active: true, step: 'video', progress: 60, error: null });
 
-        // A. Upload to AssemblyAI
-        const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
-            method: 'POST',
-            headers: { 
-                'Authorization': ASSEMBLY_KEY 
-            },
-            body: recordingState.blob
-        });
+      // 3. TURNING TO VIDEO...
+      const videoBlob = await generateVideoBlob(recordingState.blob, text);
+      setPipeline({ active: true, step: 'sending', progress: 80, error: null });
 
-        if (!uploadResponse.ok) {
-            const err = await uploadResponse.json();
-            throw new Error(`Upload failed: ${err.error || uploadResponse.statusText}`);
-        }
-        
-        const uploadData = await uploadResponse.json();
-        setRecordingState(prev => ({ ...prev, transcript: "🧠 AI is processing text..." }));
-        
-        // B. Request Transcription
-        const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
-            method: 'POST',
-            headers: { 
-                'Authorization': ASSEMBLY_KEY,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ 
-                audio_url: uploadData.upload_url,
-                language_detection: true // Auto-detect language
-            })
-        });
+      // 4. VIDEO SENT
+      const publicUrl = await uploadVideo(videoBlob);
+      await saveMessageToDB(publicUrl, text);
 
-        if (!transcriptResponse.ok) throw new Error("AI Processing failed");
-
-        const transcriptData = await transcriptResponse.json();
-        const transcriptId = transcriptData.id;
-
-        // C. Poll for Results
-        const checkStatus = async () => {
-            const pollingResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
-                headers: { 'Authorization': ASSEMBLY_KEY }
-            });
-            const result = await pollingResponse.json();
-
-            if (result.status === 'completed') {
-                setRecordingState(prev => ({ ...prev, transcript: result.text || "" }));
-                setTranscribing(false);
-            } else if (result.status === 'error') {
-                setRecordingState(prev => ({ ...prev, transcript: "❌ AI Error: " + result.error }));
-                setTranscribing(false);
-            } else {
-                setTimeout(checkStatus, 1000); // Poll every 1s
-            }
-        };
-
-        checkStatus();
+      setPipeline({ active: true, step: 'sent', progress: 100, error: null });
+      
+      // Reset after success
+      setTimeout(() => {
+        alert("Video Sent! 🚀");
+        window.location.href = window.location.origin;
+      }, 1000);
 
     } catch (err) {
-        console.error(err);
-        setTranscribing(false);
-        setRecordingState(prev => ({ ...prev, transcript: "❌ Transcription Failed. Please type manually." }));
-        alert(`Transcription Error: ${err.message}`);
+      console.error(err);
+      setPipeline({ active: false, step: '', progress: 0, error: err.message });
     }
   };
 
-  // 2. Native Share (Files Only)
-  const handleNativeShare = async (videoUrl, msgId) => {
-    if (!navigator.share || !navigator.canShare) {
-      alert("Sharing not supported. Downloading instead...");
-      handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
-      return;
-    }
+  // --- PIPELINE STEP 1: TRANSCRIPTION ---
+  const performTranscription = async (blob) => {
+    // Upload
+    const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
+      method: 'POST',
+      headers: { 'Authorization': ASSEMBLY_KEY },
+      body: blob
+    });
+    if (!uploadRes.ok) throw new Error("Upload to AI failed");
+    const uploadData = await uploadRes.json();
 
-    setSharingId(msgId);
-    try {
-      const response = await fetch(videoUrl);
-      const blob = await response.blob();
-      
-      const isMp4 = blob.type.includes('mp4');
-      const ext = isMp4 ? 'mp4' : 'webm'; 
-      const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
-      
-      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
-      const shareData = { files: [file] };
+    // Start Job
+    const transcriptRes = await fetch('https://api.assemblyai.com/v2/transcript', {
+      method: 'POST',
+      headers: { 'Authorization': ASSEMBLY_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url: uploadData.upload_url, language_detection: true })
+    });
+    const transcriptData = await transcriptRes.json();
+    const id = transcriptData.id;
 
-      if (navigator.canShare(shareData)) {
-        await navigator.share(shareData);
-      } else {
-        throw new Error("Device refused file share.");
-      }
-    } catch (error) {
-      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-        alert("Could not share file directly. Downloading instead...");
-        handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
-      }
-    } finally {
-      setSharingId(null);
-    }
-  };
-
-  const fetchMessages = useCallback(async (username) => {
-    try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('username', username)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      
-      if (data) {
-        setMessages(prev => {
-          const merged = data.map(remoteMsg => {
-            const localMsg = prev.find(p => p.id === remoteMsg.id);
-            if (localMsg?.video_url && !remoteMsg.video_url) {
-                return { ...remoteMsg, video_url: localMsg.video_url };
-            }
-            return remoteMsg;
-          });
-          if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
-          return merged;
-        });
-      }
-    } catch (err) { console.error('Fetch error:', err); }
-  }, []);
-
-  // --- AUTH ---
-  const handleAuth = async () => {
-    const { username, password } = formData;
-    if (!username.match(/^[a-zA-Z0-9_-]{3,20}$/)) return setStatus({ ...status, error: 'Invalid username' });
-    if (password.length < 6) return setStatus({ ...status, error: 'Password too short' });
-
-    setStatus({ loading: true, error: null });
-    try {
-      if (authMode === 'signup') {
-        const { data: ex } = await supabase.from('users').select('username').eq('username', username).maybeSingle();
-        if (ex) throw new Error('Username taken');
-        const { error } = await supabase.from('users').insert({ username, password });
-        if (error) throw error;
-      } else {
-        const { data } = await supabase.from('users').select('username').eq('username', username).eq('password', password).maybeSingle();
-        if (!data) throw new Error('Invalid credentials');
-      }
-      const u = { username };
-      setUser(u);
-      localStorage.setItem('anon-voice-user', JSON.stringify(u));
-      setView('inbox');
-      setFormData({ username: '', password: '', recipient: '' });
-      fetchMessages(username);
-    } catch (err) { setStatus({ ...status, error: err.message }); }
-    finally { setStatus(prev => ({ ...prev, loading: false })); }
-  };
-
-  const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); setMessages([]); };
-
-  // --- RECORDING ---
-  const startRecording = async () => {
-    setStatus({ ...status, error: null });
-    try {
-      if (!navigator.mediaDevices) throw new Error('Audio not supported');
-      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
-      streamRef.current = stream;
-
-      const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-      let selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
-      
-      const recorder = new MediaRecorder(stream, { mimeType: selectedMime });
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
-
-      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      
-      recorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: selectedMime || 'audio/webm' });
-        if (blob.size < 1000) {
-          setStatus({ ...status, error: 'Recording too short' });
-          return;
-        }
-        setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
-        stream.getTracks().forEach(t => t.stop());
-      };
-
-      recorder.start(1000); 
-      setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
-      timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
-      
-      // Native Speech Recognition (Try this first)
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SR) {
-        const r = new SR(); 
-        r.continuous = true; 
-        r.interimResults = true;
-        r.lang = 'en-US'; // Explicitly set language
-        
-        r.onresult = e => {
-            const text = Array.from(e.results).map(res => res[0].transcript).join('');
-            setRecordingState(p => ({ ...p, transcript: text }));
-        };
-        r.onerror = e => console.log("Native Speech Error:", e.error);
-        
-        r.start(); 
-        recognitionRef.current = r;
-      }
-    } catch (err) { 
-        console.error(err);
-        setStatus({ ...status, error: 'Mic access denied or not supported' }); 
-    }
-  };
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (recognitionRef.current) recognitionRef.current.stop();
-    }
-  }, []);
-
-  const handleSendMessage = async () => {
-    if (!recordingState.blob) return;
-    setStatus({ loading: true, error: null });
-    try {
-      const ext = recordingState.blob.type.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `voice-${Date.now()}.${ext}`;
-      
-      const { error: upErr } = await supabase.storage
-          .from('voices')
-          .upload(fileName, recordingState.blob, { contentType: recordingState.blob.type });
-          
-      if (upErr) throw upErr;
-      
-      const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-      const { error: dbErr } = await supabase.from('messages').insert({
-        username: formData.recipient, text: recordingState.transcript || '[Voice Message]', audio_url: publicUrl
+    // Poll
+    while (true) {
+      const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${id}`, {
+        headers: { 'Authorization': ASSEMBLY_KEY }
       });
-      if (dbErr) throw dbErr;
-
-      alert('Message sent! 🚀');
-      window.location.href = window.location.origin;
-    } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
+      const result = await pollRes.json();
+      if (result.status === 'completed') return result.text;
+      if (result.status === 'error') throw new Error(result.error);
+      await new Promise(r => setTimeout(r, 1000));
+    }
   };
 
-  // 3. Video Generation
-  const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
-    if (genState.id) return;
-    setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
-    
-    let ctx = null;
+  // --- PIPELINE STEP 3: VIDEO GENERATION ---
+  const generateVideoBlob = async (audioBlob, text) => {
+    return new Promise(async (resolve, reject) => {
+      let ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
 
-    try {
-      const response = await fetch(remoteAudioUrl);
-      if (!response.ok) throw new Error("Failed to fetch audio file");
-      const audioBufferData = await response.arrayBuffer();
-
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const audioBuffer = await ctx.decodeAudioData(audioBufferData);
-
-      // Audio Graph
+      // Setup Nodes (Robotic Effect)
       const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
+      source.buffer = audioBufferData;
       const dest = ctx.createMediaStreamDestination();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
-      
-      const voiceConfig = VOICE_TYPES[voiceType.toUpperCase()] || VOICE_TYPES.ROBOT;
-      source.detune.value = voiceConfig.detune;
-      source.playbackRate.value = voiceConfig.speed;
+
+      // Robot Settings
+      source.detune.value = -800; // Low pitch
       
       const gainNode = ctx.createGain();
       gainNode.gain.value = 2.0;
@@ -419,166 +225,201 @@ export default function AnonymousVoiceApp() {
       gainNode.connect(analyser);
       gainNode.connect(dest);
 
-      // Canvas Setup
-      const width = 1080;
-      const height = 1920;
+      // Canvas
+      const width = 720; // 720p is faster for mobile generation
+      const height = 1280;
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
       const canvasCtx = canvas.getContext('2d', { alpha: false });
-      
-      const canvasStream = canvas.captureStream(30);
-      const mixedStream = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks()
-      ]);
-      
-      // Determine Output Format (MP4 preferred for sharing)
-      const mimeTypes = ['video/mp4', 'video/webm;codecs=h264', 'video/webm;codecs=vp8,opus'];
-      const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-      const mediaRecorder = new MediaRecorder(mixedStream, { 
-        mimeType: selectedMime,
-        videoBitsPerSecond: 3000000 
-      });
+      const stream = canvas.captureStream(30);
+      const combinedStream = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
       
+      const mime = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm';
+      const recorder = new MediaRecorder(combinedStream, { mimeType: mime, videoBitsPerSecond: 2500000 });
       const chunks = [];
-      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-      
+
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+         const blob = new Blob(chunks, { type: mime });
+         ctx.close();
+         resolve(blob);
+      };
+
+      recorder.start();
+      source.start(0);
+
+      // Animation Loop
+      const duration = audioBufferData.duration;
+      const startTime = ctx.currentTime;
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const duration = audioBuffer.duration / voiceConfig.speed;
-      
-      // Record Loop
-      await new Promise((resolve, reject) => {
-        mediaRecorder.onstop = resolve;
-        mediaRecorder.onerror = reject;
-        mediaRecorder.start();
-        source.start(0);
 
-        const startTime = ctx.currentTime;
-        const draw = () => {
-           const elapsedTime = ctx.currentTime - startTime;
-           if (elapsedTime >= duration + 0.5) { 
-              mediaRecorder.stop();
-              return;
-           }
+      const draw = () => {
+        if (ctx.state === 'closed') return;
+        const elapsed = ctx.currentTime - startTime;
+        if (elapsed >= duration + 0.5) {
+          recorder.stop();
+          return;
+        }
 
-           analyser.getByteFrequencyData(dataArray);
-           const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
-           
-           // Background Gradient
-           const grad = canvasCtx.createLinearGradient(0,0,0,height);
-           grad.addColorStop(0, '#0f172a');
-           grad.addColorStop(1, voiceConfig.color);
-           canvasCtx.fillStyle = grad;
-           canvasCtx.fillRect(0,0,width,height);
+        analyser.getByteFrequencyData(dataArray);
+        const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
 
-           // Avatar Animation
-           const t = Date.now()/1000;
-           canvasCtx.save();
-           canvasCtx.translate(width/2, height/2);
-           canvasCtx.translate(0, Math.sin(t*3)*15);
+        // Draw visuals
+        const grad = canvasCtx.createLinearGradient(0,0,0,height);
+        grad.addColorStop(0, '#0f172a');
+        grad.addColorStop(1, '#667eea'); // Robot Color
+        canvasCtx.fillStyle = grad;
+        canvasCtx.fillRect(0,0,width,height);
 
-           canvasCtx.fillStyle = '#e2e8f0';
-           canvasCtx.beginPath(); canvasCtx.roundRect(-200,-200,400,400,40); canvasCtx.fill();
+        const t = Date.now()/1000;
+        canvasCtx.save();
+        canvasCtx.translate(width/2, height/2);
+        canvasCtx.translate(0, Math.sin(t*3)*15);
 
-           // Eyes
-           canvasCtx.fillStyle = voiceConfig.color;
-           canvasCtx.shadowBlur=20; canvasCtx.shadowColor=voiceConfig.color;
-           const blink = Math.sin(t*2)>0.95?5:60;
-           canvasCtx.fillRect(-120,-50,80,blink);
-           canvasCtx.fillRect(40,-50,80,blink);
-           canvasCtx.shadowBlur=0;
+        // Robot Face
+        canvasCtx.fillStyle = '#e2e8f0';
+        canvasCtx.beginPath(); canvasCtx.roundRect(-150,-150,300,300,30); canvasCtx.fill();
 
-           // Mouth (Reacts to Audio)
-           const mouth = Math.max(10, avg*3);
-           canvasCtx.fillStyle = '#1e293b';
-           canvasCtx.fillRect(-100,100,200,mouth);
-           canvasCtx.restore();
+        // Eyes
+        canvasCtx.fillStyle = '#667eea';
+        canvasCtx.shadowBlur=20; canvasCtx.shadowColor='#667eea';
+        canvasCtx.fillRect(-90,-40,60,40);
+        canvasCtx.fillRect(30,-40,60,40);
+        canvasCtx.shadowBlur=0;
 
-           // Branding
-           canvasCtx.font='bold 60px sans-serif';
-           canvasCtx.fillStyle='rgba(255,255,255,0.8)';
-           canvasCtx.textAlign='center';
-           canvasCtx.fillText('ANON VOX', width/2, 200);
+        // Mouth
+        const mouthHeight = Math.max(5, avg * 2);
+        canvasCtx.fillStyle = '#1e293b';
+        canvasCtx.fillRect(-75, 80, 150, mouthHeight);
+        canvasCtx.restore();
 
-           // Subtitles
-           if (text) {
-             canvasCtx.font='40px sans-serif';
-             canvasCtx.fillStyle='#fff';
-             const words = text.split(' ');
-             const p = elapsedTime / duration;
-             const i = Math.floor(p*words.length);
-             const sub = words.slice(Math.max(0,i-2), i+3).join(' ');
-             canvasCtx.fillText(sub||text.substring(0,25)+'...', width/2, height-300);
-           }
+        // Branding
+        canvasCtx.font='bold 40px sans-serif';
+        canvasCtx.fillStyle='rgba(255,255,255,0.8)';
+        canvasCtx.textAlign='center';
+        canvasCtx.fillText('ANON VOX', width/2, 150);
 
-           setGenState({ id: msgId, progress: Math.min(100, Math.round((elapsedTime/duration)*100)), status: 'Recording...' });
-           requestAnimationFrame(draw);
-        };
-        draw();
-      });
+        // Subtitles (Transcript)
+        if (text) {
+           canvasCtx.font='30px sans-serif';
+           canvasCtx.fillStyle='#fff';
+           const words = text.split(' ');
+           const p = elapsed / duration;
+           const idx = Math.floor(p * words.length);
+           const segment = words.slice(Math.max(0, idx-2), idx+3).join(' ');
+           canvasCtx.fillText(segment, width/2, height - 200);
+        }
 
-      // Final Upload
-      setGenState({ id: msgId, progress: 100, status: 'Uploading...' });
-      
-      const videoBlob = new Blob(chunks, { type: selectedMime });
-      const ext = selectedMime.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `video-${msgId}-${Date.now()}.${ext}`;
-      
-      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, videoBlob);
-      if (upErr) throw upErr;
-      
-      const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
-      
-      const { data: updatedData, error: dbErr } = await supabase
-        .from('messages')
-        .update({ video_url: publicUrl })
-        .eq('id', msgId)
-        .select();
-      
-      if (dbErr || !updatedData || updatedData.length === 0) {
-        console.error("DB Update Failed", dbErr);
-        alert("Video generated, but failed to save. Check permissions.");
-      }
-      
-      setMessages(p => p.map(m => m.id === msgId ? { ...m, video_url: publicUrl } : m));
-      setActiveTab('videos');
+        requestAnimationFrame(draw);
+      };
+      draw();
+    });
+  };
 
-    } catch (err) {
-       console.error(err);
-       setStatus({ ...status, error: 'Video generation failed: ' + err.message });
-    } finally {
-       if (ctx) ctx.close();
-       setGenState({ id: null, progress: 0, status: '' });
+  // --- PIPELINE STEP 4 & 5: UPLOAD & SAVE ---
+  const uploadVideo = async (blob) => {
+    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+    const fileName = `final-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('voices').upload(fileName, blob);
+    if (error) throw error;
+    const { data } = supabase.storage.from('voices').getPublicUrl(fileName);
+    return data.publicUrl;
+  };
+
+  const saveMessageToDB = async (url, text) => {
+    const { error } = await supabase.from('messages').insert({
+      username: formData.recipient,
+      text: text || '[Voice Message]',
+      video_url: url // We send the video URL directly now
+    });
+    if (error) throw error;
+  };
+
+
+  // --- NATIVE SHARE (Viewer Side) ---
+  const handleNativeShare = async (videoUrl, msgId) => {
+    if (!navigator.share) {
+      alert("Sharing not supported. Downloading...");
+      handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
+      return;
     }
-  }, [genState.id]);
+    setSharingId(msgId);
+    try {
+      const response = await fetch(videoUrl);
+      const blob = await response.blob();
+      const mime = blob.type.includes('mp4') ? 'video/mp4' : 'video/webm';
+      const file = new File([blob], `msg-${msgId}.${mime.includes('mp4')?'mp4':'webm'}`, { type: mime });
+      await navigator.share({ files: [file] });
+    } catch (e) { console.error(e); } 
+    finally { setSharingId(null); }
+  };
 
-  // --- RENDERERS ---
-  const renderError = () => (
-    status.error && (
-      <div className="fixed top-4 left-4 right-4 z-50 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between shadow-lg max-w-lg mx-auto">
-        <div className="flex items-center gap-2"><AlertCircle className="w-5 h-5"/><span>{status.error}</span></div>
-        <button onClick={() => setStatus({ ...status, error: null })}><X className="w-4 h-4"/></button>
-      </div>
-    )
-  );
+  // --- RECORDING UI LOGIC ---
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        setRecordingState(p => ({ ...p, isRecording: false, blob, url: URL.createObjectURL(blob) }));
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      recorder.start(1000); 
+      setRecordingState({ isRecording: true, time: 0, blob: null, url: null });
+      timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
+    } catch (err) { alert("Mic access denied"); }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      clearInterval(timerRef.current);
+    }
+  };
+
+  const fetchMessages = useCallback(async (username) => {
+    const { data } = await supabase.from('messages').select('*').eq('username', username).order('created_at', { ascending: false });
+    if(data) setMessages(data);
+  }, []);
+
+  const handleAuth = async () => {
+    const { username, password } = formData;
+    if (authMode === 'signup') {
+        const { error } = await supabase.from('users').insert({ username, password });
+        if (error) return alert(error.message);
+    } else {
+        const { data } = await supabase.from('users').select('username').eq('username', username).eq('password', password).maybeSingle();
+        if (!data) return alert("Invalid credentials");
+    }
+    const u = { username };
+    setUser(u);
+    localStorage.setItem('anon-voice-user', JSON.stringify(u));
+    setView('inbox');
+  };
+
+  const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); };
 
   return (
     <>
-      {renderError()}
+      {pipeline.error && <div className="fixed top-0 w-full bg-red-500 text-white p-2 text-center z-50">{pipeline.error}</div>}
+      
       {view === 'landing' && (
         <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 relative">
           <div className="absolute inset-0 bg-gradient-to-br from-purple-900 to-black opacity-80" />
           <div className="relative z-10 text-center max-w-md w-full">
-            <div className="w-24 h-24 mx-auto bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full flex items-center justify-center mb-6 shadow-2xl">
-              <Sparkles className="w-12 h-12 text-white animate-pulse" />
-            </div>
             <h1 className="text-5xl font-black mb-2">AnonVox</h1>
-            <p className="text-gray-400 mb-8">Send anonymous audio.<br/>Receive robotic videos.</p>
+            <p className="text-gray-400 mb-8">Send anonymous messages.<br/>They see a robot, not you.</p>
             <div className="grid gap-4">
-              <button onClick={() => { setView('auth'); setAuthMode('signup'); }} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:scale-105 transition">Get Started</button>
-              <button onClick={() => { setView('auth'); setAuthMode('login'); }} className="w-full py-4 bg-gray-800 text-gray-300 rounded-xl font-bold hover:bg-gray-700 transition">Log In</button>
+              <button onClick={() => { setView('auth'); setAuthMode('signup'); }} className="w-full py-4 bg-white text-black rounded-xl font-bold">Get Started</button>
+              <button onClick={() => { setView('auth'); setAuthMode('login'); }} className="w-full py-4 bg-gray-800 text-gray-300 rounded-xl font-bold">Log In</button>
             </div>
           </div>
         </div>
@@ -586,70 +427,114 @@ export default function AnonymousVoiceApp() {
 
       {view === 'recorder' && (
         <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden min-h-[500px] flex flex-col">
             <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white text-center">
               <h2 className="text-sm opacity-80">SENDING TO</h2>
               <h1 className="text-3xl font-black">@{formData.recipient}</h1>
             </div>
-            <div className="p-8">
-              {!recordingState.blob ? (
-                <div className="flex flex-col items-center">
-                  <div className="mb-6 w-full">
-                    <p className="text-xs font-bold text-gray-400 mb-2 uppercase">Ideas</p>
-                    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                      {MESSAGE_TEMPLATES.map((t, i) => (
-                        <button key={i} onClick={() => setRecordingState(p => ({...p, transcript: t}))} className="whitespace-nowrap px-4 py-2 bg-gray-100 rounded-full text-xs hover:bg-purple-100 transition">{t.substring(0, 20)}...</button>
-                      ))}
-                    </div>
-                  </div>
-                  <button onClick={recordingState.isRecording ? stopRecording : startRecording} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all ${recordingState.isRecording ? 'bg-red-500 scale-110' : 'bg-black hover:scale-105'}`}>
-                    {recordingState.isRecording ? <Square className="w-8 h-8 text-white"/> : <Mic className="w-8 h-8 text-white"/>}
-                  </button>
-                  <p className="mt-4 font-mono font-bold">{Math.floor(recordingState.time / 60)}:{(recordingState.time % 60).toString().padStart(2, '0')}</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-purple-50 p-4 rounded-xl flex items-center justify-between">
-                    <div className="flex items-center gap-3"><Check className="text-purple-600"/><span className="font-bold text-sm">Recorded</span></div>
-                    <button onClick={() => { const a = new Audio(recordingState.url); a.play(); }}><Play className="text-gray-700"/></button>
+            
+            <div className="p-8 flex-1 flex flex-col justify-center">
+              
+              {/* --- PIPELINE PROGRESS VIEW (When Processing) --- */}
+              {pipeline.active ? (
+                <div className="space-y-6 text-center animate-in fade-in zoom-in">
+                  <div className="w-24 h-24 mx-auto bg-black rounded-full flex items-center justify-center">
+                     {pipeline.step === 'sent' ? <Check className="text-green-500 w-10 h-10"/> : <Loader2 className="text-white w-10 h-10 animate-spin"/>}
                   </div>
                   
-                  {/* --- TRANSCRIPTION SECTION --- */}
-                  <div className="space-y-2">
-                      <label className="text-xs font-bold text-gray-500 uppercase">Message Text</label>
-                      <textarea 
-                        className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm min-h-[80px]"
-                        value={recordingState.transcript}
-                        onChange={(e) => setRecordingState(p => ({...p, transcript: e.target.value}))}
-                        placeholder={transcribing ? "AI is working..." : "Box empty? Native Speech not supported. Click 'Fix text with AI' below."}
-                      />
-                      <button 
-                        onClick={handleAssemblyTranscribe}
-                        disabled={transcribing}
-                        className="text-xs font-bold text-purple-600 flex items-center gap-1 hover:underline"
-                      >
-                         {transcribing ? <Loader2 className="w-3 h-3 animate-spin"/> : <BrainCircuit className="w-3 h-3"/>}
-                         {transcribing ? 'AI is processing...' : 'Fix text with AI (AssemblyAI)'}
-                      </button>
+                  <div>
+                    <h2 className="text-2xl font-black uppercase tracking-tighter mb-2">
+                      {pipeline.step === 'transcribing' && "Transcribing..."}
+                      {pipeline.step === 'robotic' && "Turning to robotic voice..."}
+                      {pipeline.step === 'video' && "Turning to video..."}
+                      {pipeline.step === 'sending' && "Video Sent"}
+                      {pipeline.step === 'sent' && "Video Sent"}
+                    </h2>
+                    <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                      <div className="bg-purple-600 h-full transition-all duration-500" style={{ width: `${pipeline.progress}%` }} />
+                    </div>
                   </div>
-
-                  <button onClick={handleSendMessage} disabled={status.loading || transcribing} className="w-full py-4 bg-black text-white rounded-xl font-bold flex justify-center">{status.loading ? <Loader2 className="animate-spin"/> : 'Send Now'}</button>
-                  <button onClick={() => setRecordingState({ isRecording: false, time: 0, blob: null, url: null, transcript: '' })} className="w-full py-3 text-red-500 font-bold text-sm">Discard</button>
                 </div>
+              ) : (
+                /* --- RECORDING VIEW --- */
+                !recordingState.blob ? (
+                  <div className="flex flex-col items-center">
+                     <div className="mb-6 w-full text-center"><p className="text-gray-400 font-bold">HOLD TO RECORD</p></div>
+                     <button onClick={recordingState.isRecording ? stopRecording : startRecording} className={`w-24 h-24 rounded-full flex items-center justify-center transition-all ${recordingState.isRecording ? 'bg-red-500 scale-110' : 'bg-black hover:scale-105'}`}>
+                      {recordingState.isRecording ? <Square className="w-8 h-8 text-white"/> : <Mic className="w-8 h-8 text-white"/>}
+                    </button>
+                    <p className="mt-4 font-mono font-bold text-xl">{Math.floor(recordingState.time / 60)}:{(recordingState.time % 60).toString().padStart(2, '0')}</p>
+                  </div>
+                ) : (
+                  /* --- REVIEW VIEW (No Text Shown) --- */
+                  <div className="space-y-4">
+                    <div className="bg-purple-50 p-6 rounded-2xl flex flex-col items-center gap-4">
+                      <div className="flex items-center gap-2 text-purple-700 font-bold">
+                        <Check className="w-5 h-5"/> <span>Recorded Successfully</span>
+                      </div>
+                      <button onClick={() => { const a = new Audio(recordingState.url); a.play(); }} className="bg-white p-3 rounded-full shadow-sm"><Play className="w-6 h-6 text-black"/></button>
+                    </div>
+
+                    <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2">
+                       <Zap className="w-5 h-5" /> Transform & Send
+                    </button>
+                    
+                    <button onClick={() => setRecordingState({ isRecording: false, time: 0, blob: null })} className="w-full py-3 text-red-500 font-bold">Discard</button>
+                  </div>
+                )
               )}
             </div>
           </div>
         </div>
       )}
 
+      {view === 'inbox' && user && (
+        <div className="min-h-screen bg-gray-50 pb-20">
+          <header className="bg-white sticky top-0 z-20 shadow-sm p-4 flex justify-between items-center max-w-3xl mx-auto w-full">
+            <h1 className="font-bold text-xl flex items-center gap-2"><Sparkles className="text-purple-600"/> AnonVox</h1>
+            <button onClick={logout}><LogOut className="text-gray-400"/></button>
+          </header>
+          <main className="max-w-3xl mx-auto p-4 space-y-6">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-6 text-white shadow-lg">
+              <h2 className="text-2xl font-bold">Get Messages</h2>
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => {
+                   const url = `${window.location.origin}?send_to=${user.username}&ref=${user.username}`;
+                   if(navigator.share) navigator.share({ title: 'AnonVox', url });
+                   else { navigator.clipboard.writeText(url); alert('Copied!'); }
+                }} className="bg-white text-indigo-900 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2"><Share2 className="w-4 h-4"/> Share Link</button>
+              </div>
+            </div>
+
+            {messages.map(msg => (
+               <div key={msg.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                  <div className="flex gap-3 mb-4 items-center">
+                     <div className="w-10 h-10 rounded-full bg-pink-100 text-pink-600 flex items-center justify-center"><Film className="w-5 h-5"/></div>
+                     <div><p className="font-bold text-sm">Anonymous</p><p className="text-xs text-gray-400">{new Date(msg.created_at).toLocaleDateString()}</p></div>
+                  </div>
+                  {msg.video_url ? (
+                     <div className="flex flex-col gap-4">
+                         <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
+                         <button onClick={() => handleNativeShare(msg.video_url, msg.id)} className="w-full bg-black text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2">
+                           {sharingId === msg.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Share2 className="w-4 h-4"/>} Share Video
+                         </button>
+                     </div>
+                  ) : (
+                    <div className="bg-gray-100 p-4 rounded-xl text-center"><p className="text-gray-500 text-sm">Processing Video...</p></div>
+                  )}
+               </div>
+            ))}
+          </main>
+        </div>
+      )}
+
       {view === 'auth' && (
         <div className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
           <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl">
-            <h2 className="text-2xl font-black mb-6 text-center">{authMode==='login'?'Welcome':'Join'}</h2>
-            <input className="w-full p-4 bg-gray-50 rounded-xl mb-4" placeholder="Username" value={formData.username} onChange={e=>setFormData({...formData, username:e.target.value})}/>
-            <input className="w-full p-4 bg-gray-50 rounded-xl mb-6" type="password" placeholder="Password" value={formData.password} onChange={e=>setFormData({...formData, password:e.target.value})}/>
-            <button onClick={handleAuth} disabled={status.loading} className="w-full py-4 bg-black text-white rounded-xl font-bold mb-4">{status.loading?<Loader2 className="animate-spin mx-auto"/>:(authMode==='login'?'Log In':'Sign Up')}</button>
-            <button onClick={()=>setView('landing')} className="w-full text-gray-400 text-sm">Cancel</button>
+             <input className="w-full p-4 bg-gray-50 rounded-xl mb-4" placeholder="Username" value={formData.username} onChange={e=>setFormData({...formData, username:e.target.value})}/>
+             <input className="w-full p-4 bg-gray-50 rounded-xl mb-6" type="password" placeholder="Password" value={formData.password} onChange={e=>setFormData({...formData, password:e.target.value})}/>
+             <button onClick={handleAuth} className="w-full py-4 bg-black text-white rounded-xl font-bold mb-4">{authMode==='login'?'Log In':'Sign Up'}</button>
+             <button onClick={()=>setView('landing')} className="w-full text-gray-400 text-sm">Cancel</button>
           </div>
         </div>
       )}
