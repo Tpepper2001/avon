@@ -117,12 +117,11 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- CRITICAL: NATIVE FILE SHARE ---
-  // This function ensures the actual FILE is shared, not just a link.
+// --- CRITICAL: NATIVE FILE SHARE ---
   const handleNativeShare = async (videoUrl, msgId) => {
-    // 1. Check browser capabilities
-    if (!navigator.share || !navigator.canShare) {
-      alert("Sharing is not supported on this browser/device. Saving file instead.");
+    // Basic capability check
+    if (!navigator.share) {
+      alert("Sharing is not supported on this browser. Downloading instead.");
       handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       return;
     }
@@ -130,35 +129,61 @@ export default function AnonymousVoiceApp() {
     setSharingId(msgId);
     
     try {
-      // 2. Fetch the video blob from Supabase
-      const response = await fetch(videoUrl);
-      if (!response.ok) throw new Error("Could not fetch video file");
-      const blob = await response.blob();
-
-      // 3. Determine MIME type (Prioritize MP4 for iOS/WhatsApp)
-      const isMp4 = blob.type.includes('mp4');
-      const ext = isMp4 ? 'mp4' : 'webm';
-      const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
-
-      // 4. Create a File object
-      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
-      const shareData = { files: [file] };
-
-      // 5. SHARE: We deliberately do NOT include 'text' or 'url' fields.
-      // Including text often causes iOS/WhatsApp to ignore the file attachment.
-      if (navigator.canShare(shareData)) {
-        await navigator.share(shareData);
-      } else {
-        // Fallback if device supports sharing but refuses this file type
-        console.warn("Device refused file share, falling back to download");
-        alert("This app can't share this video format directly. Downloading instead.");
-        handleDownload(videoUrl, `anonvox-${msgId}.${ext}`);
+      // Fetch video with proper CORS headers
+      const response = await fetch(videoUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'video/*'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch video: ${response.status}`);
       }
+      
+      const blob = await response.blob();
+      console.log('Fetched blob:', blob.type, blob.size);
+
+      // Force MP4 mime type if blob type is empty or generic
+      let mimeType = blob.type;
+      if (!mimeType || mimeType === 'application/octet-stream' || mimeType === '') {
+        mimeType = 'video/mp4';
+      }
+
+      const ext = mimeType.includes('webm') ? 'webm' : 'mp4';
+      
+      // Create file with explicit type
+      const file = new File([blob], `anonvox-${msgId}.${ext}`, { 
+        type: mimeType,
+        lastModified: Date.now()
+      });
+      
+      console.log('Created file:', file.name, file.type, file.size);
+
+      // Try sharing with just the file
+      const shareData = { files: [file] };
+      
+      // Check if this specific data can be shared
+      if (navigator.canShare && !navigator.canShare(shareData)) {
+        console.warn('Device cannot share this file type');
+        alert("Your device doesn't support sharing this video format. Downloading instead.");
+        handleDownload(videoUrl, file.name);
+        return;
+      }
+
+      // Attempt to share
+      await navigator.share(shareData);
+      console.log('Share successful');
+      
     } catch (error) {
-      // Ignore AbortError (user cancelled the share sheet)
-      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-        console.error('Share failed:', error);
-        alert("Share failed. Downloading file instead.");
+      console.error('Share error:', error);
+      
+      // User cancelled - don't show error
+      if (error.name === 'AbortError' || error.name === 'NotAllowedError') {
+        console.log('User cancelled share');
+      } else {
+        // Real error - fallback to download
+        alert(`Share failed: ${error.message}. Downloading instead.`);
         handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       }
     } finally {
