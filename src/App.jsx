@@ -6,12 +6,15 @@ import {
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
+// ==========================================
 // --- CONFIGURATION ---
+// ==========================================
+
 const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
-// !!! IMPORTANT: PUT YOUR ASSEMBLY AI KEY HERE !!!
-const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b';
+// 🔴 IMPORTANT: PASTE YOUR ASSEMBLY AI API KEY HERE 🔴
+const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -121,27 +124,38 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- ASSEMBLY AI TRANSCRIPTION ---
+  // ==========================================
+  // --- CORE FUNCTIONALITY ---
+  // ==========================================
+
+  // 1. Transcription (AssemblyAI)
   const handleAssemblyTranscribe = async () => {
-    if (!ASSEMBLY_KEY) {
-      alert("Please add your AssemblyAI API Key in the code to use this feature!");
+    if (!ASSEMBLY_KEY || ASSEMBLY_KEY === '') {
+      alert("⚠️ ERROR: Missing AssemblyAI API Key.\n\nPlease add your key in the code (line 17).");
       return;
     }
-    if (!recordingState.blob) return;
+    
+    if (!recordingState.blob) {
+      alert("No audio recorded yet!");
+      return;
+    }
 
     setTranscribing(true);
     setStatus({ loading: true, error: null });
 
     try {
-        // 1. Upload
-        const response = await fetch('https://api.assemblyai.com/v2/upload', {
+        // A. Upload to AssemblyAI
+        const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
             method: 'POST',
             headers: { 'Authorization': ASSEMBLY_KEY },
             body: recordingState.blob
         });
-        const uploadData = await response.json();
+
+        if (!uploadResponse.ok) throw new Error("Upload to AI failed");
         
-        // 2. Transcribe
+        const uploadData = await uploadResponse.json();
+        
+        // B. Request Transcription
         const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
             method: 'POST',
             headers: { 
@@ -150,10 +164,13 @@ export default function AnonymousVoiceApp() {
             },
             body: JSON.stringify({ audio_url: uploadData.upload_url })
         });
+
+        if (!transcriptResponse.ok) throw new Error("AI Processing failed");
+
         const transcriptData = await transcriptResponse.json();
         const transcriptId = transcriptData.id;
 
-        // 3. Poll
+        // C. Poll for Results
         const checkStatus = async () => {
             const pollingResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
                 headers: { 'Authorization': ASSEMBLY_KEY }
@@ -165,9 +182,9 @@ export default function AnonymousVoiceApp() {
                 setTranscribing(false);
                 setStatus({ loading: false, error: null });
             } else if (result.status === 'error') {
-                throw new Error("Transcription failed");
+                throw new Error("AI Error: " + result.error);
             } else {
-                setTimeout(checkStatus, 1000);
+                setTimeout(checkStatus, 1000); // Poll every 1s
             }
         };
 
@@ -176,11 +193,12 @@ export default function AnonymousVoiceApp() {
     } catch (err) {
         console.error(err);
         setTranscribing(false);
-        setStatus({ loading: false, error: 'AI Transcription failed' });
+        setStatus({ loading: false, error: err.message });
+        alert(`Transcription Failed: ${err.message}`);
     }
   };
 
-  // --- NATIVE SHARE ---
+  // 2. Native Share (Files Only)
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share || !navigator.canShare) {
       alert("Sharing not supported. Downloading instead...");
@@ -192,11 +210,15 @@ export default function AnonymousVoiceApp() {
     try {
       const response = await fetch(videoUrl);
       const blob = await response.blob();
+      
+      // Determine correct mime type for the platform
       const isMp4 = blob.type.includes('mp4');
       const ext = isMp4 ? 'mp4' : 'webm'; 
       const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
       
       const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
+      
+      // CRITICAL: Send ONLY the file. No text/title/url.
       const shareData = { files: [file] };
 
       if (navigator.canShare(shareData)) {
@@ -300,7 +322,7 @@ export default function AnonymousVoiceApp() {
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
       
-      // Native Speech Recognition
+      // Native Speech Recognition (Try this first, it's free/fast)
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
         const r = new SR(); r.continuous = true; r.interimResults = true;
@@ -345,7 +367,7 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- VIDEO GENERATION ---
+  // 3. Video Generation
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
     setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
@@ -360,6 +382,7 @@ export default function AnonymousVoiceApp() {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const audioBuffer = await ctx.decodeAudioData(audioBufferData);
 
+      // Audio Graph
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       const dest = ctx.createMediaStreamDestination();
@@ -377,6 +400,7 @@ export default function AnonymousVoiceApp() {
       gainNode.connect(analyser);
       gainNode.connect(dest);
 
+      // Canvas Setup
       const width = 1080;
       const height = 1920;
       const canvas = document.createElement('canvas');
@@ -390,6 +414,7 @@ export default function AnonymousVoiceApp() {
         ...dest.stream.getAudioTracks()
       ]);
       
+      // Determine Output Format (MP4 preferred for sharing)
       const mimeTypes = ['video/mp4', 'video/webm;codecs=h264', 'video/webm;codecs=vp8,opus'];
       const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
@@ -404,6 +429,7 @@ export default function AnonymousVoiceApp() {
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const duration = audioBuffer.duration / voiceConfig.speed;
       
+      // Record Loop
       await new Promise((resolve, reject) => {
         mediaRecorder.onstop = resolve;
         mediaRecorder.onerror = reject;
@@ -421,12 +447,14 @@ export default function AnonymousVoiceApp() {
            analyser.getByteFrequencyData(dataArray);
            const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
            
+           // Background Gradient
            const grad = canvasCtx.createLinearGradient(0,0,0,height);
            grad.addColorStop(0, '#0f172a');
            grad.addColorStop(1, voiceConfig.color);
            canvasCtx.fillStyle = grad;
            canvasCtx.fillRect(0,0,width,height);
 
+           // Avatar Animation
            const t = Date.now()/1000;
            canvasCtx.save();
            canvasCtx.translate(width/2, height/2);
@@ -435,6 +463,7 @@ export default function AnonymousVoiceApp() {
            canvasCtx.fillStyle = '#e2e8f0';
            canvasCtx.beginPath(); canvasCtx.roundRect(-200,-200,400,400,40); canvasCtx.fill();
 
+           // Eyes
            canvasCtx.fillStyle = voiceConfig.color;
            canvasCtx.shadowBlur=20; canvasCtx.shadowColor=voiceConfig.color;
            const blink = Math.sin(t*2)>0.95?5:60;
@@ -442,16 +471,19 @@ export default function AnonymousVoiceApp() {
            canvasCtx.fillRect(40,-50,80,blink);
            canvasCtx.shadowBlur=0;
 
+           // Mouth (Reacts to Audio)
            const mouth = Math.max(10, avg*3);
            canvasCtx.fillStyle = '#1e293b';
            canvasCtx.fillRect(-100,100,200,mouth);
            canvasCtx.restore();
 
+           // Branding
            canvasCtx.font='bold 60px sans-serif';
            canvasCtx.fillStyle='rgba(255,255,255,0.8)';
            canvasCtx.textAlign='center';
            canvasCtx.fillText('ANON VOX', width/2, 200);
 
+           // Subtitles
            if (text) {
              canvasCtx.font='40px sans-serif';
              canvasCtx.fillStyle='#fff';
@@ -468,6 +500,7 @@ export default function AnonymousVoiceApp() {
         draw();
       });
 
+      // Final Upload
       setGenState({ id: msgId, progress: 100, status: 'Uploading...' });
       
       const videoBlob = new Blob(chunks, { type: selectedMime });
@@ -502,6 +535,7 @@ export default function AnonymousVoiceApp() {
     }
   }, [genState.id]);
 
+  // --- RENDERERS ---
   const renderError = () => (
     status.error && (
       <div className="fixed top-4 left-4 right-4 z-50 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between shadow-lg max-w-lg mx-auto">
