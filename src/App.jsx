@@ -7,7 +7,7 @@ import {
 import { createClient } from '@supabase/supabase-js';
 
 // ==========================================
-// --- CONFIGURATION ---
+// --- CONFIGURATION --
 // ==========================================
 
 const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
