@@ -13,7 +13,7 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
-// 🔴 IMPORTANT: PASTE YOUR ASSEMBLY AI API KEY HERE 🔴
+// 🔴 PASTE YOUR ASSEMBLY AI KEY INSIDE THE QUOTES BELOW 🔴
 const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -131,7 +131,7 @@ export default function AnonymousVoiceApp() {
   // 1. Transcription (AssemblyAI)
   const handleAssemblyTranscribe = async () => {
     if (!ASSEMBLY_KEY || ASSEMBLY_KEY === '') {
-      alert("⚠️ ERROR: Missing AssemblyAI API Key.\n\nPlease add your key in the code (line 17).");
+      alert("⚠️ ERROR: Missing AssemblyAI API Key.\n\nPlease add your key in the code (line 17) to make this button work.");
       return;
     }
     
@@ -141,19 +141,28 @@ export default function AnonymousVoiceApp() {
     }
 
     setTranscribing(true);
-    setStatus({ loading: true, error: null });
+    // Show user something is happening
+    setRecordingState(prev => ({ ...prev, transcript: "⏳ Uploading audio to AI..." }));
 
     try {
+        console.log("Starting AssemblyAI Upload...");
+
         // A. Upload to AssemblyAI
         const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
             method: 'POST',
-            headers: { 'Authorization': ASSEMBLY_KEY },
+            headers: { 
+                'Authorization': ASSEMBLY_KEY 
+            },
             body: recordingState.blob
         });
 
-        if (!uploadResponse.ok) throw new Error("Upload to AI failed");
+        if (!uploadResponse.ok) {
+            const err = await uploadResponse.json();
+            throw new Error(`Upload failed: ${err.error || uploadResponse.statusText}`);
+        }
         
         const uploadData = await uploadResponse.json();
+        setRecordingState(prev => ({ ...prev, transcript: "🧠 AI is processing text..." }));
         
         // B. Request Transcription
         const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
@@ -162,7 +171,10 @@ export default function AnonymousVoiceApp() {
                 'Authorization': ASSEMBLY_KEY,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ audio_url: uploadData.upload_url })
+            body: JSON.stringify({ 
+                audio_url: uploadData.upload_url,
+                language_detection: true // Auto-detect language
+            })
         });
 
         if (!transcriptResponse.ok) throw new Error("AI Processing failed");
@@ -180,9 +192,9 @@ export default function AnonymousVoiceApp() {
             if (result.status === 'completed') {
                 setRecordingState(prev => ({ ...prev, transcript: result.text || "" }));
                 setTranscribing(false);
-                setStatus({ loading: false, error: null });
             } else if (result.status === 'error') {
-                throw new Error("AI Error: " + result.error);
+                setRecordingState(prev => ({ ...prev, transcript: "❌ AI Error: " + result.error }));
+                setTranscribing(false);
             } else {
                 setTimeout(checkStatus, 1000); // Poll every 1s
             }
@@ -193,8 +205,8 @@ export default function AnonymousVoiceApp() {
     } catch (err) {
         console.error(err);
         setTranscribing(false);
-        setStatus({ loading: false, error: err.message });
-        alert(`Transcription Failed: ${err.message}`);
+        setRecordingState(prev => ({ ...prev, transcript: "❌ Transcription Failed. Please type manually." }));
+        alert(`Transcription Error: ${err.message}`);
     }
   };
 
@@ -211,14 +223,11 @@ export default function AnonymousVoiceApp() {
       const response = await fetch(videoUrl);
       const blob = await response.blob();
       
-      // Determine correct mime type for the platform
       const isMp4 = blob.type.includes('mp4');
       const ext = isMp4 ? 'mp4' : 'webm'; 
       const mimeType = isMp4 ? 'video/mp4' : 'video/webm';
       
       const file = new File([blob], `anonvox-${msgId}.${ext}`, { type: mimeType });
-      
-      // CRITICAL: Send ONLY the file. No text/title/url.
       const shareData = { files: [file] };
 
       if (navigator.canShare(shareData)) {
@@ -322,12 +331,22 @@ export default function AnonymousVoiceApp() {
       setRecordingState({ isRecording: true, time: 0, blob: null, url: null, transcript: '', error: null });
       timerRef.current = setInterval(() => setRecordingState(p => ({ ...p, time: p.time + 1 })), 1000);
       
-      // Native Speech Recognition (Try this first, it's free/fast)
+      // Native Speech Recognition (Try this first)
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
-        const r = new SR(); r.continuous = true; r.interimResults = true;
-        r.onresult = e => setRecordingState(p => ({ ...p, transcript: Array.from(e.results).map(res => res[0].transcript).join('') }));
-        r.start(); recognitionRef.current = r;
+        const r = new SR(); 
+        r.continuous = true; 
+        r.interimResults = true;
+        r.lang = 'en-US'; // Explicitly set language
+        
+        r.onresult = e => {
+            const text = Array.from(e.results).map(res => res[0].transcript).join('');
+            setRecordingState(p => ({ ...p, transcript: text }));
+        };
+        r.onerror = e => console.log("Native Speech Error:", e.error);
+        
+        r.start(); 
+        recognitionRef.current = r;
       }
     } catch (err) { 
         console.error(err);
@@ -597,12 +616,12 @@ export default function AnonymousVoiceApp() {
                   
                   {/* --- TRANSCRIPTION SECTION --- */}
                   <div className="space-y-2">
-                      <label className="text-xs font-bold text-gray-500 uppercase">Message Text (Edit if needed)</label>
+                      <label className="text-xs font-bold text-gray-500 uppercase">Message Text</label>
                       <textarea 
                         className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm min-h-[80px]"
                         value={recordingState.transcript}
                         onChange={(e) => setRecordingState(p => ({...p, transcript: e.target.value}))}
-                        placeholder="Transcription will appear here..."
+                        placeholder={transcribing ? "AI is working..." : "Box empty? Native Speech not supported. Click 'Fix text with AI' below."}
                       />
                       <button 
                         onClick={handleAssemblyTranscribe}
@@ -610,7 +629,7 @@ export default function AnonymousVoiceApp() {
                         className="text-xs font-bold text-purple-600 flex items-center gap-1 hover:underline"
                       >
                          {transcribing ? <Loader2 className="w-3 h-3 animate-spin"/> : <BrainCircuit className="w-3 h-3"/>}
-                         {transcribing ? 'AI is thinking...' : 'Fix text with AI (AssemblyAI)'}
+                         {transcribing ? 'AI is processing...' : 'Fix text with AI (AssemblyAI)'}
                       </button>
                   </div>
 
@@ -620,87 +639,6 @@ export default function AnonymousVoiceApp() {
               )}
             </div>
           </div>
-        </div>
-      )}
-
-      {view === 'inbox' && user && (
-        <div className="min-h-screen bg-gray-50 pb-20">
-          <header className="bg-white sticky top-0 z-20 shadow-sm p-4 flex justify-between items-center max-w-3xl mx-auto w-full">
-            <h1 className="font-bold text-xl flex items-center gap-2"><Sparkles className="text-purple-600"/> AnonVox</h1>
-            <button onClick={logout}><LogOut className="text-gray-400"/></button>
-          </header>
-          <main className="max-w-3xl mx-auto p-4 space-y-6">
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden">
-              <h2 className="text-2xl font-bold">Get Messages</h2>
-              <p className="text-indigo-100 mb-4 text-sm">Share your profile link.</p>
-              <div className="flex gap-2">
-                <button onClick={() => {
-                   const url = `${window.location.origin}?send_to=${user.username}&ref=${user.username}`;
-                   if(navigator.share) navigator.share({ title: 'AnonVox', url });
-                   else { navigator.clipboard.writeText(url); alert('Copied!'); }
-                }} className="bg-white text-indigo-900 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2"><Share2 className="w-4 h-4"/> Share</button>
-                <button onClick={() => {
-                   const url = `${window.location.origin}?send_to=${user.username}&ref=${user.username}`;
-                   window.open(`https://wa.me/?text=${encodeURIComponent("Send me an anonymous voice msg! 🤖 " + url)}`, '_blank');
-                }} className="bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2"><MessageCircle className="w-4 h-4"/> WhatsApp</button>
-              </div>
-            </div>
-            
-            <div className="flex gap-4 border-b border-gray-200">
-               <button onClick={() => setActiveTab('inbox')} className={`pb-3 px-2 font-bold text-sm ${activeTab==='inbox'?'border-b-2 border-black':''}`}>Inbox</button>
-               <button onClick={() => setActiveTab('videos')} className={`pb-3 px-2 font-bold text-sm ${activeTab==='videos'?'border-b-2 border-black':''}`}>Videos</button>
-            </div>
-
-            {messages.map(msg => {
-               if(activeTab === 'videos' && !msg.video_url) return null;
-               return (
-                 <div key={msg.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-                    <div className="flex gap-3 mb-4 items-center">
-                       <div className={`w-10 h-10 rounded-full flex items-center justify-center ${msg.video_url?'bg-pink-100 text-pink-600':'bg-gray-100 text-gray-600'}`}>{msg.video_url?<Film className="w-5 h-5"/>:<Mic className="w-5 h-5"/>}</div>
-                       <div><p className="font-bold text-sm">Anonymous</p><p className="text-xs text-gray-400">{new Date(msg.created_at).toLocaleDateString()}</p></div>
-                    </div>
-                    {msg.video_url ? (
-                       <div className="flex flex-col gap-4">
-                           <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
-                           
-                           <div className="grid grid-cols-2 gap-2">
-                             <button 
-                               onClick={() => handleNativeShare(msg.video_url, msg.id)} 
-                               disabled={sharingId === msg.id}
-                               className="col-span-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 shadow-md hover:scale-[1.02] transition"
-                             >
-                               {sharingId === msg.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Share2 className="w-4 h-4"/>}
-                               {sharingId === msg.id ? 'Preparing...' : 'Share Video'}
-                             </button>
-
-                             <button onClick={() => handleDownload(msg.video_url, `anonvox-${msg.id}.mp4`)} className="bg-gray-100 text-gray-800 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-200">
-                               <Download className="w-3 h-3"/> Save
-                             </button>
-                             <button onClick={() => {
-                                handleDownload(msg.video_url, `tiktok-anonvox-${msg.id}.mp4`);
-                                alert("Video saved! Open TikTok and upload the file.");
-                             }} className="bg-black text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-800">
-                               <Music2 className="w-3 h-3"/> TikTok
-                             </button>
-                           </div>
-                       </div>
-                    ) : (
-                       <div className="bg-gray-50 p-4 rounded-xl">
-                          <p className="text-gray-600 italic text-sm mb-4">"{msg.text || 'Voice Message'}"</p>
-                          <div className="flex gap-2 flex-wrap">
-                             {Object.values(VOICE_TYPES).map(v => (
-                                <button key={v.id} onClick={() => generateVideo(msg.id, msg.audio_url, msg.text, v.id)} disabled={genState.id !== null || referralCount < v.req} className={`px-3 py-2 rounded-lg text-xs font-bold border flex items-center gap-2 ${genState.id===msg.id?'opacity-50':'hover:bg-gray-200'} ${referralCount<v.req?'opacity-50 cursor-not-allowed':''}`}>
-                                   {genState.id===msg.id?<Loader2 className="w-3 h-3 animate-spin"/>:(referralCount<v.req?'🔒':<Zap className="w-3 h-3"/>)} {v.name}
-                                </button>
-                             ))}
-                          </div>
-                          {genState.id === msg.id && <div className="mt-3 bg-gray-200 h-1.5 rounded-full overflow-hidden"><div className="h-full bg-blue-500 transition-all duration-300" style={{width:`${genState.progress}%`}}/></div>}
-                       </div>
-                    )}
-                 </div>
-               );
-            })}
-          </main>
         </div>
       )}
 
