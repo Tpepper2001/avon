@@ -14,10 +14,10 @@ const SUPABASE_URL = 'https://ghlnenmfwlpwlqdrbean.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdobG5lbm1md2xwd2xxZHJiZWFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MTE0MDQsImV4cCI6MjA3OTk4NzQwNH0.rNILUdI035c4wl4kFkZFP4OcIM_t7bNMqktKm25d5Gg';
 
 // 🔴 1. PASTE ASSEMBLY AI KEY HERE 🔴
-const ASSEMBLY_KEY = ''; 
+const ASSEMBLY_KEY = 'e923129f7dec495081e757c6fe82ea8b'; 
 
 // 🔴 2. PASTE VOICE RSS KEY HERE (Get free at voicerss.org) 🔴
-const VOICERSS_KEY = ''; 
+const VOICERSS_KEY = '747fd61f3e264f42b52bcd332823661e'; 
 
 // 🤖 STATIC ROBOT IMAGE URL
 const ROBOT_IMAGE_URL = "https://images.unsplash.com/photo-1535378437323-9528869de713?q=80&w=720&auto=format&fit=crop";
