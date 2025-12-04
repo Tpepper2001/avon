@@ -47,7 +47,7 @@ export default function AnonymousVoiceApp() {
   const [messages, setMessages] = useState([]);
   const [referralCount, setReferralCount] = useState(0);
   const [genState, setGenState] = useState({ id: null, progress: 0, status: '' });
-  const [sharingId, setSharingId] = useState(null); // New state to track which video is sharing
+  const [sharingId, setSharingId] = useState(null);
   
   // --- REFS ---
   const mediaRecorderRef = useRef(null);
@@ -117,42 +117,48 @@ export default function AnonymousVoiceApp() {
     }
   };
 
-  // --- NEW FUNCTION: NATIVE SHARE ---
+  // --- FIXED: NATIVE SHARE (Exclusive File Sharing) ---
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share) {
-      alert("Sharing is not supported on this browser.");
+      alert("Sharing not supported. Downloading instead.");
+      handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
       return;
     }
 
     setSharingId(msgId);
     
     try {
-      // 1. Fetch the file as a blob
+      // 1. Fetch file
       const response = await fetch(videoUrl);
       const blob = await response.blob();
       
-      // 2. Create a File object (needed for navigator.share)
-      const file = new File([blob], `anonvox-${msgId}.webm`, { type: 'video/webm' });
+      // 2. Determine type (MP4 preferred for sharing)
+      const type = blob.type.includes('mp4') ? 'video/mp4' : 'video/webm';
+      const ext = type === 'video/mp4' ? 'mp4' : 'webm';
+      const file = new File([blob], `anonvox-${msgId}.${ext}`, { type });
 
-      // 3. Check if the device allows sharing files
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: 'AnonVox Message',
-          text: 'Check out this anonymous voice message video! 🤖',
-        });
+      // 3. Define Share Data - ONLY FILES, NO TEXT
+      // Adding text often causes WhatsApp/iOS to ignore the file and send the text instead.
+      const shareData = {
+        files: [file]
+      };
+
+      // 4. Validate & Share
+      if (navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
       } else {
-        // Fallback: Share just the URL if files aren't supported
-        await navigator.share({
-          title: 'AnonVox Message',
-          text: 'Check out this anonymous voice message video!',
-          url: videoUrl
-        });
+        // Strict Fallback: Do NOT share text if file fails. Download it.
+        alert("This app cannot share this video format directly. Downloading file instead...");
+        handleDownload(videoUrl, `anonvox-${msgId}.${ext}`);
       }
     } catch (error) {
       if (error.name !== 'AbortError') {
-        console.error('Error sharing:', error);
-        alert("Could not share the file. Try downloading it instead.");
+        console.error('Share failed:', error);
+        // Don't alert if user just cancelled the share sheet
+        if (error.name !== 'NotAllowedError') {
+             alert("Share failed. Downloading instead.");
+             handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
+        }
       }
     } finally {
       setSharingId(null);
@@ -289,7 +295,7 @@ export default function AnonymousVoiceApp() {
     } catch (err) { setStatus({ ...status, error: 'Send failed', loading: false }); }
   };
 
-  // --- VIDEO GENERATION ---
+  // --- VIDEO GENERATION (UPDATED FOR MP4 SUPPORT) ---
   const generateVideo = useCallback(async (msgId, remoteAudioUrl, text, voiceType) => {
     if (genState.id) return;
     setGenState({ id: msgId, progress: 0, status: 'Processing Audio...' });
@@ -334,8 +340,16 @@ export default function AnonymousVoiceApp() {
         ...dest.stream.getAudioTracks()
       ]);
       
+      // CHECK IF MP4 IS SUPPORTED (Better for Sharing)
+      let mimeType = 'video/webm;codecs=vp8,opus';
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+        mimeType = 'video/mp4';
+      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+        mimeType = 'video/webm;codecs=h264';
+      }
+
       const mediaRecorder = new MediaRecorder(mixedStream, { 
-        mimeType: 'video/webm;codecs=vp8,opus',
+        mimeType: mimeType,
         videoBitsPerSecond: 3000000 
       });
       
@@ -410,10 +424,12 @@ export default function AnonymousVoiceApp() {
       });
 
       setGenState({ id: msgId, progress: 100, status: 'Finalizing...' });
-      const videoBlob = new Blob(chunks, { type: 'video/webm' });
-      const fileName = `video-${msgId}-${Date.now()}.webm`;
       
-      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, videoBlob);
+      const finalBlob = new Blob(chunks, { type: mimeType });
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const fileName = `video-${msgId}-${Date.now()}.${ext}`;
+      
+      const { error: upErr } = await supabase.storage.from('voices').upload(fileName, finalBlob);
       if (upErr) throw upErr;
       
       const { data: { publicUrl } } = supabase.storage.from('voices').getPublicUrl(fileName);
@@ -549,23 +565,22 @@ export default function AnonymousVoiceApp() {
                        <div className="flex flex-col gap-4">
                            <video src={msg.video_url} controls className="w-full rounded-xl bg-black aspect-[9/16] max-h-[400px] object-contain"/>
                            
-                           {/* UPDATED: SHARE & DOWNLOAD ACTIONS */}
                            <div className="grid grid-cols-2 gap-2">
-                             {/* Native Share Button */}
+                             {/* SHARE BUTTON */}
                              <button 
                                onClick={() => handleNativeShare(msg.video_url, msg.id)} 
                                disabled={sharingId === msg.id}
                                className="col-span-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 shadow-md hover:scale-[1.02] transition"
                              >
                                {sharingId === msg.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Share2 className="w-4 h-4"/>}
-                               {sharingId === msg.id ? 'Preparing...' : 'Share Video Directly'}
+                               {sharingId === msg.id ? 'Preparing...' : 'Share Video'}
                              </button>
 
-                             <button onClick={() => handleDownload(msg.video_url, `anonvox-${msg.id}.webm`)} className="bg-gray-100 text-gray-800 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-200">
-                               <Download className="w-3 h-3"/> Download
+                             <button onClick={() => handleDownload(msg.video_url, `anonvox-${msg.id}.mp4`)} className="bg-gray-100 text-gray-800 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-200">
+                               <Download className="w-3 h-3"/> Save
                              </button>
                              <button onClick={() => {
-                                handleDownload(msg.video_url, `tiktok-anonvox-${msg.id}.webm`);
+                                handleDownload(msg.video_url, `tiktok-anonvox-${msg.id}.mp4`);
                                 alert("Video saved! Open TikTok and upload the file.");
                              }} className="bg-black text-white py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-800">
                                <Music2 className="w-3 h-3"/> TikTok
