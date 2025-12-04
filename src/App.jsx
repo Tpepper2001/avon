@@ -117,75 +117,127 @@ export default function AnonymousVoiceApp() {
     }
   };
 
- // --- DIRECT VIDEO FILE SHARING (Browser Optimized) ---
-  const handleNativeShare = async (videoUrl, msgId) => {
-    setSharingId(msgId);
-    
-    try {
-      // Fetch the video file first
-      const response = await fetch(videoUrl);
-      if (!response.ok) throw new Error('Failed to fetch video');
-      
-      const blob = await response.blob();
-      
-      // Force MP4 MIME type for maximum compatibility
-      const mimeType = 'video/mp4';
-      const fileName = `anonvox-${msgId}.mp4`;
-      const videoFile = new File([blob], fileName, { type: mimeType });
+ // --- DIRECT VIDEO DOWNLOAD + SHARE WITH FILE ---
+const handleDirectShare = async (videoUrl, msgId, platform = "download") => {
+  setSharingId(msgId);
 
-      // Try Web Share API with the actual video file
-      if (navigator.share) {
-        const shareData = {
-          files: [videoFile],
-          title: 'AnonVox',
-          text: 'Anonymous voice message 🎤'
-        };
+  try {
+    // 1. Fetch video safely
+    const response = await fetch(videoUrl);
+    if (!response.ok) throw new Error("Video fetch failed");
 
-        // Check if sharing this file is supported
-        if (navigator.canShare && navigator.canShare(shareData)) {
-          await navigator.share(shareData);
-          return; // Successfully shared the video file!
-        }
-        
-        // If file sharing not supported, try without files
-        if (navigator.canShare({ text: shareData.text, url: videoUrl })) {
+    const blob = await response.blob();
+    const fileName = `anonvox-${msgId}.mp4`;
+    const fileType = "video/mp4";
+
+    // Create File + Object URL
+    const videoFile = new File([blob], fileName, { type: fileType });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const isSocial =
+      platform === "whatsapp" ||
+      platform === "instagram" ||
+      platform === "tiktok";
+
+    // -----------------------------------------------------
+    // 2. Attempt direct Web Share API for social platforms
+    // -----------------------------------------------------
+    if (isSocial) {
+      if (navigator.share && navigator.canShare?.({ files: [videoFile] })) {
+        try {
           await navigator.share({
-            title: shareData.title,
-            text: shareData.text,
-            url: videoUrl
+            files: [videoFile],
+            title: "AnonVox",
+            text: "Check out this anonymous voice message! 🎤🤖",
           });
+
+          URL.revokeObjectURL(blobUrl);
           return;
+        } catch (err) {
+          if (err.name === "AbortError") {
+            URL.revokeObjectURL(blobUrl);
+            return;
+          }
+          console.log("Web Share failed → fallback:", err);
         }
       }
-
-      // Fallback: Download the file
-      // Create a download link
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-      
-      alert("✅ Video downloaded! You can now share it from your device.");
-      
-    } catch (error) {
-      console.error('Share error:', error);
-      
-      // Don't show error if user cancelled
-      if (error.name === 'AbortError') return;
-      
-      // For other errors, suggest download
-      if (error.name !== 'NotAllowedError') {
-        alert("⚠️ Direct sharing failed. Downloading video instead...");
-        handleDownload(videoUrl, `anonvox-${msgId}.mp4`);
-      }
-    } finally {
-      setSharingId(null);
     }
-  };
+
+    // -----------------------------------------------------
+    // 3. Fallback: force download first
+    // -----------------------------------------------------
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    // -----------------------------------------------------
+    // 4. Open the relevant social app AFTER download
+    // -----------------------------------------------------
+    if (isSocial) {
+      setTimeout(() => {
+        if (platform === "whatsapp") {
+          const msg = encodeURIComponent(
+            "Check out this anonymous voice message! 🎤🤖"
+          );
+          window.open(`https://wa.me/?text=${msg}`, "_blank");
+
+          alert(
+            "✅ Video downloaded!\nWhatsApp is opening now.\nAttach the video you just downloaded."
+          );
+        }
+
+        if (platform === "instagram") {
+          alert(
+            "✅ Video downloaded!\nTo share on Instagram:\n1. Open Instagram\n2. Tap + (Create)\n3. Choose the video\n4. Post as Story or Reel"
+          );
+          window.open("instagram://camera", "_blank");
+        }
+
+        if (platform === "tiktok") {
+          alert(
+            "✅ Video downloaded!\nTo share on TikTok:\n1. Open TikTok\n2. Tap +\n3. Upload the downloaded video"
+          );
+        }
+      }, 500);
+
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+
+    // -----------------------------------------------------
+    // 5. Generic download share (desktop & mobile fallback)
+    // -----------------------------------------------------
+    if (navigator.share) {
+      setTimeout(async () => {
+        try {
+          await navigator.share({
+            files: [videoFile],
+            title: "AnonVox",
+            text: "Anonymous voice message 🎤",
+          });
+        } catch (err) {
+          if (err.name !== "AbortError") {
+            alert("✅ Video downloaded to your device!");
+          }
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+      }, 400);
+    } else {
+      alert("✅ Video downloaded to your device!");
+      URL.revokeObjectURL(blobUrl);
+    }
+  } catch (err) {
+    console.error("Share error:", err);
+    alert("⚠️ Operation failed. Please try again.");
+  } finally {
+    setSharingId(null);
+  }
+};
+
 
   const fetchMessages = useCallback(async (username) => {
     try {
