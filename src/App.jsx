@@ -29,12 +29,6 @@ const AUDIO_CONSTRAINTS = {
   }
 };
 
-const MESSAGE_TEMPLATES = [
-  "Confession: I've had a crush on you since...",
-  "Truth Bomb: You need to hear this...",
-  "Question: What was that thing you posted...",
-];
-
 export default function AnonymousVoiceApp() {
   // --- STATE ---
   const [user, setUser] = useState(null);
@@ -47,9 +41,9 @@ export default function AnonymousVoiceApp() {
   const [recordingState, setRecordingState] = useState({ 
     isRecording: false, 
     time: 0, 
-    rawBlob: null, // The original voice
+    rawBlob: null, 
     rawUrl: null,
-    robotBlob: null, // The processed robot voice
+    robotBlob: null, 
     robotUrl: null
   });
 
@@ -131,7 +125,6 @@ export default function AnonymousVoiceApp() {
   // --- AUDIO PROCESSING (PREVIEW GENERATION) ---
   // ==========================================
 
-  // This function takes raw audio and creates the Robot Blob
   const processToRobotAudio = async () => {
     if (!recordingState.rawBlob) return;
     setIsProcessingAudio(true);
@@ -141,25 +134,19 @@ export default function AnonymousVoiceApp() {
         const arrayBuffer = await recordingState.rawBlob.arrayBuffer();
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
 
-        // 1. Setup Audio Graph
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         
         const dest = ctx.createMediaStreamDestination();
         
-        // --- ROBOT EFFECTS ---
-        // Pitch Shift (Detune)
+        // Robot Effects
         source.detune.value = -800; // Deep robot voice
-        
-        // Gain (Volume Boost)
         const gainNode = ctx.createGain();
         gainNode.gain.value = 1.5;
 
-        // Connect graph
         source.connect(gainNode);
         gainNode.connect(dest);
 
-        // 2. Record the processed output
         const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
         const recorder = new MediaRecorder(dest.stream, { mimeType: mime });
         const chunks = [];
@@ -182,10 +169,9 @@ export default function AnonymousVoiceApp() {
         recorder.start();
         source.start(0);
 
-        // Stop recording when audio ends
         setTimeout(() => {
             if(recorder.state === 'recording') recorder.stop();
-        }, (audioBuffer.duration * 1000) + 200); // +200ms buffer
+        }, (audioBuffer.duration * 1000) + 200);
 
     } catch (err) {
         console.error("Audio processing failed", err);
@@ -199,6 +185,10 @@ export default function AnonymousVoiceApp() {
   // ==========================================
 
   const startPipeline = async () => {
+    if (!formData.recipient) {
+      alert("Error: No recipient specified. Who are we sending this to?");
+      return;
+    }
     if (!recordingState.robotBlob) {
         alert("Please create the robot voice preview first!");
         return;
@@ -208,72 +198,74 @@ export default function AnonymousVoiceApp() {
     setPipeline({ active: true, step: 'transcribing', progress: 10, error: null });
 
     try {
-      // 1. TRANSCRIBING... (Use RAW audio for better AI accuracy)
+      // 1. TRANSCRIBING... 
       const text = await performTranscription(recordingState.rawBlob);
       setPipeline({ active: true, step: 'video', progress: 50, error: null });
       
-      // 2. TURNING TO VIDEO... (Use ROBOT audio for the final file)
-      // We pass the ROBOT blob here to ensure the video sounds exactly like the preview.
+      // 2. TURNING TO VIDEO... 
       const videoBlob = await generateVideoBlob(recordingState.robotBlob, text);
       setPipeline({ active: true, step: 'sending', progress: 80, error: null });
 
-      // 3. VIDEO SENT
+      // 3. UPLOADING VIDEO...
       const publicUrl = await uploadVideo(videoBlob);
+      
+      // 4. SAVING TO DB (CRITICAL STEP)
       await saveMessageToDB(publicUrl, text);
 
       setPipeline({ active: true, step: 'sent', progress: 100, error: null });
       
       setTimeout(() => {
-        alert("Video Sent! 🚀");
+        alert("Video Sent Successfully! 🚀");
         window.location.href = window.location.origin;
       }, 1000);
 
     } catch (err) {
       console.error(err);
       setPipeline({ active: false, step: '', progress: 0, error: err.message });
+      alert("Error: " + err.message);
     }
   };
 
-  // --- PIPELINE STEP 1: TRANSCRIPTION ---
+  // --- PIPELINE HELPERS ---
   const performTranscription = async (blob) => {
-    // Upload Raw Audio
-    const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
-      method: 'POST',
-      headers: { 'Authorization': ASSEMBLY_KEY },
-      body: blob
-    });
-    if (!uploadRes.ok) throw new Error("Upload to AI failed");
-    const uploadData = await uploadRes.json();
-
-    // Start Job
-    const transcriptRes = await fetch('https://api.assemblyai.com/v2/transcript', {
-      method: 'POST',
-      headers: { 'Authorization': ASSEMBLY_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url: uploadData.upload_url, language_detection: true })
-    });
-    const transcriptData = await transcriptRes.json();
-    const id = transcriptData.id;
-
-    // Poll
-    while (true) {
-      const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${id}`, {
-        headers: { 'Authorization': ASSEMBLY_KEY }
+    try {
+      const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
+        method: 'POST',
+        headers: { 'Authorization': ASSEMBLY_KEY },
+        body: blob
       });
-      const result = await pollRes.json();
-      if (result.status === 'completed') return result.text;
-      if (result.status === 'error') throw new Error(result.error);
-      await new Promise(r => setTimeout(r, 1000));
+      if (!uploadRes.ok) throw new Error("AssemblyAI Upload Failed");
+      const uploadData = await uploadRes.json();
+
+      const transcriptRes = await fetch('https://api.assemblyai.com/v2/transcript', {
+        method: 'POST',
+        headers: { 'Authorization': ASSEMBLY_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_url: uploadData.upload_url, language_detection: true })
+      });
+      const transcriptData = await transcriptRes.json();
+      const id = transcriptData.id;
+
+      while (true) {
+        const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${id}`, {
+          headers: { 'Authorization': ASSEMBLY_KEY }
+        });
+        const result = await pollRes.json();
+        if (result.status === 'completed') return result.text;
+        if (result.status === 'error') throw new Error(result.error);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    } catch (e) {
+      console.warn("Transcription failed, continuing without text:", e);
+      return ""; // Fail gracefully without crashing the whole send process
     }
   };
 
-  // --- PIPELINE STEP 2: VIDEO GENERATION ---
   const generateVideoBlob = async (audioBlob, text) => {
     return new Promise(async (resolve, reject) => {
       let ctx = new (window.AudioContext || window.webkitAudioContext)();
       const arrayBuffer = await audioBlob.arrayBuffer();
       const audioBufferData = await ctx.decodeAudioData(arrayBuffer);
 
-      // Connect existing robot audio to destination & analyzer
       const source = ctx.createBufferSource();
       source.buffer = audioBufferData;
       
@@ -282,9 +274,8 @@ export default function AnonymousVoiceApp() {
       analyser.fftSize = 256;
 
       source.connect(analyser);
-      source.connect(dest); // Audio goes to video stream
+      source.connect(dest); 
 
-      // Canvas
       const width = 720; 
       const height = 1280;
       const canvas = document.createElement('canvas');
@@ -309,7 +300,6 @@ export default function AnonymousVoiceApp() {
       recorder.start();
       source.start(0);
 
-      // Visuals Loop
       const duration = audioBufferData.duration;
       const startTime = ctx.currentTime;
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -325,7 +315,6 @@ export default function AnonymousVoiceApp() {
         analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a,b)=>a+b) / dataArray.length;
 
-        // Draw Background
         const grad = canvasCtx.createLinearGradient(0,0,0,height);
         grad.addColorStop(0, '#0f172a');
         grad.addColorStop(1, '#667eea'); 
@@ -336,31 +325,23 @@ export default function AnonymousVoiceApp() {
         canvasCtx.save();
         canvasCtx.translate(width/2, height/2);
         canvasCtx.translate(0, Math.sin(t*3)*15);
-
-        // Robot Head
         canvasCtx.fillStyle = '#e2e8f0';
         canvasCtx.beginPath(); canvasCtx.roundRect(-150,-150,300,300,30); canvasCtx.fill();
-
-        // Eyes
         canvasCtx.fillStyle = '#667eea';
         canvasCtx.shadowBlur=20; canvasCtx.shadowColor='#667eea';
         canvasCtx.fillRect(-90,-40,60,40);
         canvasCtx.fillRect(30,-40,60,40);
         canvasCtx.shadowBlur=0;
-
-        // Mouth (Visualizer)
         const mouthHeight = Math.max(5, avg * 2);
         canvasCtx.fillStyle = '#1e293b';
         canvasCtx.fillRect(-75, 80, 150, mouthHeight);
         canvasCtx.restore();
 
-        // Branding
         canvasCtx.font='bold 40px sans-serif';
         canvasCtx.fillStyle='rgba(255,255,255,0.8)';
         canvasCtx.textAlign='center';
         canvasCtx.fillText('ANON VOX', width/2, 150);
 
-        // Subtitles
         if (text) {
            canvasCtx.font='30px sans-serif';
            canvasCtx.fillStyle='#fff';
@@ -377,27 +358,31 @@ export default function AnonymousVoiceApp() {
     });
   };
 
-  // --- PIPELINE STEP 4 & 5: UPLOAD & SAVE ---
   const uploadVideo = async (blob) => {
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
     const fileName = `final-${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from('voices').upload(fileName, blob);
-    if (error) throw error;
+    if (error) throw new Error("Storage Upload Failed: " + error.message);
     const { data } = supabase.storage.from('voices').getPublicUrl(fileName);
     return data.publicUrl;
   };
 
   const saveMessageToDB = async (url, text) => {
+    console.log("Saving to DB for:", formData.recipient);
     const { error } = await supabase.from('messages').insert({
-      username: formData.recipient,
+      username: formData.recipient, // MUST match the 'username' field in the DB
       text: text || '[Voice Message]',
       video_url: url 
     });
-    if (error) throw error;
+    
+    if (error) {
+        console.error("DB Insert Error:", error);
+        throw new Error("Database Save Failed (Check RLS Policies): " + error.message);
+    }
   };
 
 
-  // --- NATIVE SHARE (Viewer Side) ---
+  // --- NATIVE SHARE ---
   const handleNativeShare = async (videoUrl, msgId) => {
     if (!navigator.share) {
       alert("Sharing not supported. Downloading...");
@@ -427,7 +412,6 @@ export default function AnonymousVoiceApp() {
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        // Reset robot state when new recording happens
         setRecordingState(p => ({ 
             ...p, 
             isRecording: false, 
@@ -470,6 +454,7 @@ export default function AnonymousVoiceApp() {
     setUser(u);
     localStorage.setItem('anon-voice-user', JSON.stringify(u));
     setView('inbox');
+    fetchMessages(username);
   };
 
   const logout = () => { setUser(null); localStorage.removeItem('anon-voice-user'); setView('landing'); };
@@ -497,12 +482,19 @@ export default function AnonymousVoiceApp() {
           <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden min-h-[500px] flex flex-col">
             <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white text-center">
               <h2 className="text-sm opacity-80">SENDING TO</h2>
-              <h1 className="text-3xl font-black">@{formData.recipient}</h1>
+              {formData.recipient ? (
+                  <h1 className="text-3xl font-black">@{formData.recipient}</h1>
+              ) : (
+                  <input 
+                    placeholder="Enter Username" 
+                    className="mt-2 text-black p-2 rounded text-center font-bold"
+                    onChange={(e) => setFormData(p => ({...p, recipient: e.target.value}))}
+                  />
+              )}
             </div>
             
             <div className="p-8 flex-1 flex flex-col justify-center">
               
-              {/* --- PIPELINE PROGRESS VIEW --- */}
               {pipeline.active ? (
                 <div className="space-y-6 text-center animate-in fade-in zoom-in">
                   <div className="w-24 h-24 mx-auto bg-black rounded-full flex items-center justify-center">
@@ -521,7 +513,6 @@ export default function AnonymousVoiceApp() {
                   </div>
                 </div>
               ) : (
-                /* --- RECORDING / REVIEW VIEW --- */
                 !recordingState.rawBlob ? (
                   <div className="flex flex-col items-center">
                      <div className="mb-6 w-full text-center"><p className="text-gray-400 font-bold">HOLD TO RECORD</p></div>
@@ -531,17 +522,14 @@ export default function AnonymousVoiceApp() {
                     <p className="mt-4 font-mono font-bold text-xl">{Math.floor(recordingState.time / 60)}:{(recordingState.time % 60).toString().padStart(2, '0')}</p>
                   </div>
                 ) : (
-                  /* --- PREVIEW & TRANSFORM VIEW --- */
                   <div className="space-y-4">
                     <div className="bg-gray-100 p-6 rounded-2xl flex flex-col items-center gap-4">
                       
-                      {/* Original Audio Preview */}
                       <div className="flex w-full items-center justify-between border-b border-gray-300 pb-3">
                         <span className="text-xs font-bold text-gray-500 uppercase">Original Voice</span>
                         <button onClick={() => { const a = new Audio(recordingState.rawUrl); a.play(); }} className="bg-white p-2 rounded-full shadow-sm"><Play className="w-4 h-4 text-black"/></button>
                       </div>
 
-                      {/* Robot Audio Preview */}
                       {recordingState.robotUrl ? (
                          <div className="flex w-full items-center justify-between animate-in slide-in-from-top-2">
                             <span className="text-xs font-bold text-purple-600 uppercase flex items-center gap-1"><Cpu className="w-3 h-3"/> Robot Voice</span>
@@ -560,7 +548,6 @@ export default function AnonymousVoiceApp() {
 
                     </div>
 
-                    {/* Send Button only appears after Robot Voice is generated */}
                     {recordingState.robotUrl && (
                         <button onClick={startPipeline} className="w-full py-4 bg-black text-white rounded-xl font-bold text-lg flex justify-center items-center gap-2 animate-in fade-in">
                         <Zap className="w-5 h-5" /> Send Now
