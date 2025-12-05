@@ -123,7 +123,6 @@ export default function AnonymousVoiceApp() {
   const startPipeline = async () => {
     if (!formData.recipient) return alert("Enter a recipient username first.");
     if (!recordingState.rawBlob) return alert("Record something first!");
-    if (!ASSEMBLY_KEY) return alert("Missing AssemblyAI API Key");
     if (!VOICERSS_KEY) return alert("Missing VoiceRSS API Key");
 
     setPipeline({ active: true, step: 'transcribing', progress: 5, error: null });
